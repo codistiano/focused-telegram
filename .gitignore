@@ -2,3 +2,4 @@ node_modules
 .env
 session
 dist
+config.json

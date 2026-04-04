@@ -13,23 +13,18 @@ import {
   sendMessageToDialog,
   sendReactionToMessage,
 } from '../client';
+import SetupScreen, { SelectableItem } from './components/SetupScreen';
+import MainScreen from './components/MainScreen';
+import { getWindowedRange } from './lib/uiUtils';
 
 type Step = 'loading' | 'setup' | 'main';
 type FocusPane = 'chats' | 'messages' | 'composer';
 
-interface SelectableItem {
-  id: string;
-  name: string;
-  type: WhitelistedItem['type'];
-  username?: string;
-}
-
 const QUICK_REACTIONS = ['👍', '❤️', '🔥', '✅'];
-const CHAT_PANE_WIDTH = 38;
-const MAX_MESSAGES_VISIBLE = 18;
-
-const truncate = (value: string, max: number): string => (value.length <= max ? value : `${value.slice(0, max - 1)}…`);
-const formatTime = (date: Date): string => `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+const SETUP_WINDOW = 30;
+const CHAT_WINDOW = 18;
+const MESSAGE_WINDOW = 18;
+const ADD_WINDOW = 20;
 
 const toFolderItem = (folder: FolderSummary): SelectableItem => ({
   id: `folder:${folder.id}`,
@@ -63,23 +58,15 @@ const App: React.FC = () => {
   const [showReactionPicker, setShowReactionPicker] = useState(false);
 
   const [addMode, setAddMode] = useState(false);
+  const [addCursor, setAddCursor] = useState(0);
   const [addSelected, setAddSelected] = useState<number[]>([]);
 
   const [sendCapability, setSendCapability] = useState<SendCapability>({ canSend: true });
   const [lastSeenByChat, setLastSeenByChat] = useState<Record<string, number>>({});
   const [newMessageByChat, setNewMessageByChat] = useState<Record<string, boolean>>({});
   const [status, setStatus] = useState('');
-  const [reactionCursor, setReactionCursor] = useState(0);
-  const [showAddMode, setShowAddMode] = useState(false);
-  const [allDialogs, setAllDialogs] = useState<any[]>([]);
-  const [addCursor, setAddCursor] = useState(0);
-  const [selectedToAdd, setSelectedToAdd] = useState<number[]>([]);
 
-  const setupOptions = useMemo<SelectableItem[]>(() => {
-    const folderOptions = folders.map(toFolderItem);
-    const dialogOptions = dialogs.map(toDialogItem);
-    return [...folderOptions, ...dialogOptions];
-  }, [dialogs, folders]);
+  const setupOptions = useMemo<SelectableItem[]>(() => [...folders.map(toFolderItem), ...dialogs.map(toDialogItem)], [dialogs, folders]);
 
   const effectiveChats = useMemo(() => {
     const directChatIds = new Set(whitelisted.filter((w) => w.type !== 'folder').map((w) => w.id));
@@ -93,8 +80,10 @@ const App: React.FC = () => {
   }, [dialogs, whitelisted]);
 
   const activeDialog = useMemo(() => {
-    if (!activeDialogId) return effectiveChats[chatCursor] ?? null;
-    return effectiveChats.find((dialog) => dialog.id === activeDialogId) ?? effectiveChats[chatCursor] ?? null;
+    if (activeDialogId) {
+      return effectiveChats.find((dialog) => dialog.id === activeDialogId) ?? null;
+    }
+    return effectiveChats[chatCursor] ?? null;
   }, [activeDialogId, chatCursor, effectiveChats]);
 
   const addOptions = useMemo(() => {
@@ -102,13 +91,10 @@ const App: React.FC = () => {
     return setupOptions.filter((item) => !existing.has(item.id));
   }, [setupOptions, whitelisted]);
 
-  const visibleMessages = useMemo(() => {
-    if (messages.length <= MAX_MESSAGES_VISIBLE) return messages;
-    const start = Math.max(0, messageCursor - MAX_MESSAGES_VISIBLE + 1);
-    return messages.slice(start, start + MAX_MESSAGES_VISIBLE);
-  }, [messages, messageCursor]);
-
-  const visibleMessageStartIndex = Math.max(0, messages.length - visibleMessages.length);
+  const setupRange = getWindowedRange(setupCursor, setupOptions.length, SETUP_WINDOW);
+  const chatRange = getWindowedRange(chatCursor, effectiveChats.length, CHAT_WINDOW);
+  const messageRange = getWindowedRange(messageCursor, messages.length, MESSAGE_WINDOW);
+  const addRange = getWindowedRange(addCursor, addOptions.length, ADD_WINDOW);
 
   const persistWhitelist = (next: WhitelistedItem[]) => {
     saveConfig({ whitelisted: next });
@@ -121,14 +107,12 @@ const App: React.FC = () => {
     setFolders(allFolders);
   };
 
-  const markChatFreshness = (chatId: string, nextMessages: MessageSummary[], isActive: boolean) => {
-    const latestId = nextMessages.length ? nextMessages[nextMessages.length - 1].id : 0;
-    setLastSeenByChat((prev) => ({ ...prev, [chatId]: Math.max(prev[chatId] || 0, latestId) }));
-
-    setNewMessageByChat((prev) => {
-      const previousSeen = lastSeenByChat[chatId] || 0;
-      const hasNew = latestId > previousSeen && !isActive;
-      return { ...prev, [chatId]: hasNew ? true : false };
+  const updateFreshness = (chatId: string, latestId: number, isActive: boolean) => {
+    setLastSeenByChat((prev) => {
+      const previousSeen = prev[chatId] || 0;
+      const nextSeen = Math.max(previousSeen, latestId);
+      setNewMessageByChat((flags) => ({ ...flags, [chatId]: latestId > previousSeen && !isActive }));
+      return { ...prev, [chatId]: nextSeen };
     });
   };
 
@@ -136,11 +120,14 @@ const App: React.FC = () => {
     try {
       if (!silent) setStatus('Loading messages…');
       const next = await getMessagesForDialog(dialogId);
+      const latestId = next.length ? next[next.length - 1].id : 0;
+
       if (isActive) {
         setMessages(next);
-        setMessageCursor(next.length > 0 ? next.length - 1 : 0);
+        setMessageCursor(Math.max(0, next.length - 1));
       }
-      markChatFreshness(dialogId, next, isActive);
+
+      updateFreshness(dialogId, latestId, isActive);
       if (!silent) setStatus('');
     } catch (err) {
       setStatus(`Error loading messages: ${(err as Error).message}`);
@@ -154,12 +141,8 @@ const App: React.FC = () => {
         await refreshDialogsAndFolders();
 
         const config = loadConfig();
-        if (config.whitelisted.length > 0) {
-          setWhitelisted(config.whitelisted);
-          setStep('main');
-        } else {
-          setStep('setup');
-        }
+        setWhitelisted(config.whitelisted);
+        setStep(config.whitelisted.length > 0 ? 'main' : 'setup');
         setStatus('');
       } catch (err) {
         setStatus(`Failed to load Telegram data: ${(err as Error).message}`);
@@ -170,20 +153,16 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (step !== 'main' || !effectiveChats.length) return;
+    if (step !== 'main' || !activeDialog) return;
 
-    const target = activeDialog ?? effectiveChats[0];
-    if (!target) return;
-
-    setActiveDialogId(target.id);
-    setNewMessageByChat((prev) => ({ ...prev, [target.id]: false }));
+    setActiveDialogId(activeDialog.id);
+    setNewMessageByChat((prev) => ({ ...prev, [activeDialog.id]: false }));
 
     void (async () => {
-      await loadMessages(target.id, false, true);
-      const cap = await getSendCapability(target.id);
-      setSendCapability(cap);
+      await loadMessages(activeDialog.id, false, true);
+      setSendCapability(await getSendCapability(activeDialog.id));
     })();
-  }, [step, activeDialogId, effectiveChats.length]);
+  }, [step, activeDialog?.id]);
 
   useEffect(() => {
     if (step !== 'main' || !effectiveChats.length) return;
@@ -196,7 +175,7 @@ const App: React.FC = () => {
     }, 10000);
 
     return () => clearInterval(timer);
-  }, [step, effectiveChats, activeDialog?.id, lastSeenByChat]);
+  }, [step, effectiveChats, activeDialog?.id]);
 
   useInput((input, key) => {
     if (step === 'setup') {
@@ -205,10 +184,11 @@ const App: React.FC = () => {
       else if (input === ' ') {
         setSelectedSetup((prev) => (prev.includes(setupCursor) ? prev.filter((i) => i !== setupCursor) : [...prev, setupCursor]));
       } else if (key.return) {
-        const chosen: WhitelistedItem[] = selectedSetup.map((idx) => setupOptions[idx]);
-        persistWhitelist(chosen);
+        persistWhitelist(selectedSetup.map((idx) => setupOptions[idx]));
         setStep('main');
-      } else if (input === 'q') process.exit(0);
+      } else if (input === 'q') {
+        process.exit(0);
+      }
       return;
     }
 
@@ -221,13 +201,13 @@ const App: React.FC = () => {
         setAddSelected((prev) => (prev.includes(addCursor) ? prev.filter((i) => i !== addCursor) : [...prev, addCursor]));
       } else if (key.return) {
         const additions = addSelected.map((idx) => addOptions[idx]);
-        if (additions.length > 0) {
+        if (additions.length) {
           persistWhitelist([...whitelisted, ...additions]);
           setStatus(`Added ${additions.length} whitelist item(s).`);
         }
-        setAddSelected([]);
-        setAddCursor(0);
         setAddMode(false);
+        setAddCursor(0);
+        setAddSelected([]);
       } else if (key.escape || input === 'q') {
         setAddMode(false);
         setAddSelected([]);
@@ -254,6 +234,7 @@ const App: React.FC = () => {
 
         const text = composerText.trim();
         if (!text) return;
+
         void (async () => {
           try {
             await sendMessageToDialog(activeDialog.id, text);
@@ -283,40 +264,22 @@ const App: React.FC = () => {
 
     if (input === 'q') {
       process.exit(0);
-      return;
-    }
-
-    if (input === 'a') {
+    } else if (input === 'a') {
       setAddMode(true);
-      return;
-    }
-
-    if (input === 'i') {
+    } else if (input === 'i') {
       if (!activeDialog || !sendCapability.canSend) {
         setStatus(sendCapability.reason || 'This chat is read-only.');
-        return;
+      } else {
+        setFocus('composer');
       }
-      setFocus('composer');
-      return;
-    }
-
-    if (key.tab) {
+    } else if (key.tab) {
       setFocus((prev) => (prev === 'chats' ? 'messages' : 'chats'));
-      return;
-    }
-
-    if (input === 'R') {
+    } else if (input === 'R') {
       void refreshDialogsAndFolders();
       if (activeDialog) void loadMessages(activeDialog.id);
-      return;
-    }
-
-    if (input === 'r' && messages[messageCursor]) {
+    } else if (input === 'r' && messages[messageCursor]) {
       setShowReactionPicker(true);
-      return;
-    }
-
-    if (focus === 'chats') {
+    } else if (focus === 'chats') {
       if (key.upArrow || input === 'k') setChatCursor((prev) => Math.max(0, prev - 1));
       else if (key.downArrow || input === 'j') setChatCursor((prev) => Math.min(effectiveChats.length - 1, prev + 1));
       else if (key.return && effectiveChats[chatCursor]) {
@@ -325,14 +288,10 @@ const App: React.FC = () => {
         setNewMessageByChat((prev) => ({ ...prev, [chat.id]: false }));
         void (async () => {
           await loadMessages(chat.id, false, true);
-          const cap = await getSendCapability(chat.id);
-          setSendCapability(cap);
+          setSendCapability(await getSendCapability(chat.id));
         })();
       }
-      return;
-    }
-
-    if (focus === 'messages') {
+    } else if (focus === 'messages') {
       if (key.upArrow || input === 'k') setMessageCursor((prev) => Math.max(0, prev - 1));
       else if (key.downArrow || input === 'j') setMessageCursor((prev) => Math.min(messages.length - 1, prev + 1));
     }
@@ -349,95 +308,41 @@ const App: React.FC = () => {
 
   if (step === 'setup') {
     return (
-      <Box flexDirection="column" padding={1}>
-        <Text bold color="cyan">Setup whitelist (chats and folders)</Text>
-        <Text dimColor>Space select • Enter save • q quit</Text>
-        <Box borderStyle="single" paddingX={1} marginTop={1} flexDirection="column">
-          {setupOptions.slice(0, 30).map((item, index) => {
-            const isCursor = setupCursor === index;
-            const isSelected = selectedSetup.includes(index);
-            return (
-              <Text key={item.id} inverse={isCursor} color={isSelected ? 'green' : undefined}>
-                {isSelected ? '●' : '○'} {truncate(item.name, 60)} <Text dimColor>({item.type})</Text>
-              </Text>
-            );
-          })}
-        </Box>
-        <Text>Selected: {selectedSetup.length}</Text>
-        {status ? <Text color="yellow">{status}</Text> : null}
-      </Box>
+      <SetupScreen
+        options={setupOptions}
+        selected={selectedSetup}
+        cursor={setupCursor}
+        visibleStart={setupRange.start}
+        visibleEnd={setupRange.end}
+        status={status}
+      />
     );
   }
 
   return (
-    <Box flexDirection="column" padding={1}>
-      <Box justifyContent="space-between">
-        <Text bold color="green">Focused Telegram TUI</Text>
-        <Text dimColor>{activeDialog ? `Active: ${truncate(activeDialog.name, 36)}` : 'No active chat'}</Text>
-      </Box>
-
-      <Box marginTop={1}>
-        <Box width={CHAT_PANE_WIDTH} borderStyle="single" borderColor={focus === 'chats' ? 'cyan' : 'gray'} paddingX={1} flexDirection="column">
-          <Text bold>Whitelisted chats</Text>
-          {effectiveChats.slice(0, 18).map((chat, i) => {
-            const isCursor = chatCursor === i;
-            const isActive = activeDialog?.id === chat.id;
-            const hasNew = newMessageByChat[chat.id];
-            return (
-              <Text key={chat.id} inverse={focus === 'chats' && isCursor} color={isActive ? 'green' : hasNew ? 'yellow' : undefined}>
-                {hasNew ? '•' : ' '} {isActive ? '▶' : ' '} {truncate(chat.name, CHAT_PANE_WIDTH - 8)}
-              </Text>
-            );
-          })}
-          {effectiveChats.length === 0 ? <Text dimColor>No chats in whitelist yet. Press a to add.</Text> : null}
-        </Box>
-
-        <Box marginLeft={1} flexGrow={1} borderStyle="single" borderColor={focus === 'messages' ? 'cyan' : 'gray'} paddingX={1} flexDirection="column">
-          <Text bold>Messages</Text>
-          {visibleMessages.map((message, i) => {
-            const absoluteIndex = visibleMessageStartIndex + i;
-            const isCursor = absoluteIndex === messageCursor;
-            const sender = message.outgoing ? 'You' : truncate(message.sender, 12);
-            const mediaTag = message.hasMedia ? ` [${message.mediaKind}]` : '';
-            return (
-              <Text key={message.id} inverse={focus === 'messages' && isCursor}>
-                {formatTime(message.date)} {sender}: {truncate(message.text, 72)}{mediaTag}
-              </Text>
-            );
-          })}
-          {messages.length === 0 ? <Text dimColor>No messages loaded.</Text> : null}
-        </Box>
-      </Box>
-
-      <Box marginTop={1} borderStyle="single" borderColor={focus === 'composer' ? 'cyan' : sendCapability.canSend ? 'gray' : 'red'} paddingX={1}>
-        <Text>
-          {focus === 'composer' ? 'Compose > ' : 'Press i to compose > '}
-          {composerText ? truncate(composerText, 110) : <Text dimColor>(type message)</Text>}
-        </Text>
-      </Box>
-
-      {!sendCapability.canSend ? <Text color="red">Read-only: {sendCapability.reason}</Text> : null}
-      {showReactionPicker ? <Text color="yellow">React: 1){QUICK_REACTIONS[0]} 2){QUICK_REACTIONS[1]} 3){QUICK_REACTIONS[2]} 4){QUICK_REACTIONS[3]}</Text> : null}
-      <Text dimColor>Tab switch pane • Enter open/send • a add whitelist • r react • Shift+R refresh • q quit</Text>
-      {status ? <Text color="yellow">{status}</Text> : null}
-
-      {addMode ? (
-        <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1} marginTop={1}>
-          <Text bold color="magenta">Add to whitelist</Text>
-          <Text dimColor>Space select • Enter add • Esc cancel</Text>
-          {addOptions.slice(0, 20).map((item, index) => {
-            const isCursor = addCursor === index;
-            const isSelected = addSelected.includes(index);
-            return (
-              <Text key={`add-${item.id}`} inverse={isCursor} color={isSelected ? 'green' : undefined}>
-                {isSelected ? '●' : '○'} {truncate(item.name, 58)} <Text dimColor>({item.type})</Text>
-              </Text>
-            );
-          })}
-          {addOptions.length === 0 ? <Text dimColor>Everything is already whitelisted.</Text> : null}
-        </Box>
-      ) : null}
-    </Box>
+    <MainScreen
+      focus={focus}
+      chats={effectiveChats}
+      chatCursor={chatCursor}
+      activeDialogId={activeDialog?.id ?? null}
+      newMessageByChat={newMessageByChat}
+      messages={messages}
+      messageCursor={messageCursor}
+      visibleMessageStart={messageRange.start}
+      visibleMessageEnd={messageRange.end}
+      composerText={composerText}
+      sendCapability={sendCapability}
+      showReactionPicker={showReactionPicker}
+      status={status}
+      addMode={addMode}
+      addOptions={addOptions}
+      addCursor={addCursor}
+      addSelected={addSelected}
+      addVisibleStart={addRange.start}
+      addVisibleEnd={addRange.end}
+      chatVisibleStart={chatRange.start}
+      chatVisibleEnd={chatRange.end}
+    />
   );
 };
 

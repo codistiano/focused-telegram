@@ -31,6 +31,12 @@
       "id": "5004658405",
       "name": "Codistiano",
       "type": "chat"
+    },
+    {
+      "id": "777000",
+      "name": "Telegram",
+      "type": "chat",
+      "username": null
     }
   ]
 }
