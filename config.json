@@ -1,3 +1,36 @@
 {
-  "whitelisted": []
+  "whitelisted": [
+    {
+      "id": "-1002280041439",
+      "name": "IT Families",
+      "type": "channel",
+      "username": "ITfamilies"
+    },
+    {
+      "id": "-1002084203959",
+      "name": "Codistiano",
+      "type": "channel",
+      "username": "codistiano"
+    },
+    {
+      "id": "-1002312459557",
+      "name": "Inspo 🔥",
+      "type": "channel"
+    },
+    {
+      "id": "-1002415655378",
+      "name": "Codistiano's Notebook",
+      "type": "channel"
+    },
+    {
+      "id": "-1002406611082",
+      "name": "IT Assignment Group",
+      "type": "channel"
+    },
+    {
+      "id": "5004658405",
+      "name": "Codistiano",
+      "type": "chat"
+    }
+  ]
 }

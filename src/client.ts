@@ -62,7 +62,7 @@ export async function initClient() {
     onError: (err) => console.error('Telegram error:', err),
   });
 
-  const sessionString = client.session.save() as string;
+  const sessionString = client.session.save() as unknown as string;
   fs.mkdirSync(SESSION_DIR, { recursive: true });
   fs.writeFileSync(SESSION_PATH, sessionString);
 
@@ -78,6 +78,24 @@ export async function getAllDialogs() {
     id: dialog.id,
     name: dialog.name || 'Unnamed',
     type: dialog.isChannel ? 'channel' : dialog.isGroup ? 'group' : 'chat',
+    username: (dialog.entity as any)?.username || undefined,
+    unreadCount: dialog.unreadCount || 0,
+  }));
+}
+
+export async function getAllAvailableDialogs() {
+  if (!client) throw new Error('Client not initialized');
+
+  // Get ALL dialogs (chats, groups, channels, users)
+  const dialogs = await client.getDialogs({ 
+    limit: 300, 
+    // folderId: undefined  → gets everything by default
+  });
+
+  return dialogs.map(dialog => ({
+    id: dialog.id,
+    name: dialog.name || (dialog.entity as any)?.username || 'Unnamed',
+    type: dialog.isChannel ? 'channel' : dialog.isGroup ? 'group' : dialog.isUser ? 'chat' : 'unknown',
     username: (dialog.entity as any)?.username || undefined,
     unreadCount: dialog.unreadCount || 0,
   }));

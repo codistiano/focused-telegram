@@ -1,117 +1,172 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Text, useInput } from 'ink';
-import { loadConfig, saveConfig, WhitelistedItem } from '../config';
-import { getAllDialogs } from '../client';
+import { Box, Text } from 'ink';
+import { loadConfig, saveConfig } from '../config';
+import { client, getAllAvailableDialogs } from '../client';
+import { Sidebar } from './Sidebar';
+import { ChatView } from './ChatView';
+import { ReactionPicker } from './ReactionPicker';
+import { AddChatModal } from './AddChatModal';
+import { InputHandler } from './InputHandler';
+import { WhitelistedItem, Message } from './types';
+import { Api } from 'telegram/tl';
 
 const App: React.FC = () => {
-  const [step, setStep] = useState<'loading' | 'setup' | 'main'>('loading');
-  const [dialogs, setDialogs] = useState<any[]>([]);
-  const [selected, setSelected] = useState<number[]>([]);
-  const [whitelisted, setWhitelisted] = useState<WhitelistedItem[]>([]);
-  const [cursor, setCursor] = useState(0);
+  const [chats, setChats] = useState<WhitelistedItem[]>([]);
+  const [selectedChatIndex, setSelectedChatIndex] = useState(0);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState('');
   const [status, setStatus] = useState('');
+  const [showReactionPicker, setShowReactionPicker] = useState(false);
+  const [reactionCursor, setReactionCursor] = useState(0);
+  const [showAddMode, setShowAddMode] = useState(false);
+  const [allDialogs, setAllDialogs] = useState<any[]>([]);
+  const [addCursor, setAddCursor] = useState(0);
+  const [selectedToAdd, setSelectedToAdd] = useState<number[]>([]);
+
+  // Load whitelist
+  useEffect(() => {
+    const config = loadConfig();
+    const improved = config.whitelisted.map((item: any) => ({
+      ...item,
+      displayType: item.type === 'channel' ? '📢 Channel' : 
+                   item.type === 'group' ? '👥 Group' : '💬 Chat'
+    }));
+    setChats(improved);
+  }, []);
+
+  // Real-time & history (same working logic)
+  useEffect(() => {
+    if (!client) return;
+
+    const handler = async (update: any) => {
+      try {
+        if (update instanceof Api.UpdateNewMessage || update instanceof Api.UpdateNewChannelMessage) {
+          const msg = update.message;
+          if (!msg) return;
+
+          const peerId = msg.peerId?.channelId || msg.peerId?.chatId || msg.peerId?.userId;
+          if (!chats.some(w => String(w.id) === String(peerId))) return;
+
+          const newMsg: Message = {
+            id: msg.id,
+            text: msg.message,
+            sender: 'Unknown',
+            date: new Date(msg.date * 1000),
+            isOutgoing: msg.out || false,
+            mediaType: msg.photo ? 'Photo' : msg.video ? 'Video' : msg.document ? 'Document' : undefined,
+            fileName: msg.document?.attributes?.[0]?.fileName || '',
+            messageObj: msg,
+          };
+
+          if (String(chats[selectedChatIndex]?.id) === String(peerId)) {
+            setMessages(prev => [...prev, newMsg].slice(-150));
+          }
+        }
+      } catch (_) {}
+    };
+
+    client.addEventHandler(handler);
+    return () => client.removeEventHandler(handler);
+  }, [chats, selectedChatIndex]);
 
   useEffect(() => {
     const load = async () => {
-      const config = loadConfig();
-      if (config.whitelisted.length > 0) {
-        setWhitelisted(config.whitelisted);
-        setStep('main');
-        return;
-      }
-
-      setStatus('Loading your chats, channels and groups...');
-      try {
-        const allDialogs = await getAllDialogs();
-        setDialogs(allDialogs);
-        setStep('setup');
-      } catch (err: any) {
-        setStatus('Error loading dialogs: ' + err.message);
-      }
+      if (!client || !chats[selectedChatIndex]) return;
+      setMessages([]);
+      const history = await client.getMessages(chats[selectedChatIndex].id, { limit: 80 });
+      const formatted = history.map((msg: any) => ({
+        id: msg.id,
+        text: msg.message,
+        sender: msg.sender ? (msg.sender as any).firstName || 'Unknown' : 'Unknown',
+        date: new Date(msg.date * 1000),
+        isOutgoing: msg.out || false,
+        mediaType: msg.photo ? 'Photo' : msg.video ? 'Video' : msg.document ? 'Document' : undefined,
+        fileName: msg.document?.attributes?.[0]?.fileName || '',
+        messageObj: msg,
+      })).reverse();
+      setMessages(formatted);
     };
     load();
-  }, []);
+  }, [selectedChatIndex, chats]);
 
-  useInput((input, key) => {
-    if (step !== 'setup') return;
-
-    if (key.upArrow || input === 'k') {
-      setCursor(prev => Math.max(0, prev - 1));
-    } else if (key.downArrow || input === 'j') {
-      setCursor(prev => Math.min(dialogs.length - 1, prev + 1));
-    } else if (input === ' ') {  // Space to toggle selection
-      const newSelected = selected.includes(cursor)
-        ? selected.filter(i => i !== cursor)
-        : [...selected, cursor];
-      setSelected(newSelected);
-    } else if (key.return) {  // Enter to save
-      const chosen: WhitelistedItem[] = selected.map(idx => ({
-        id: dialogs[idx].id,
-        name: dialogs[idx].name,
-        type: dialogs[idx].type,
-        username: dialogs[idx].username,
-      }));
-
-      saveConfig({ whitelisted: chosen });
-      setWhitelisted(chosen);
-      setStep('main');
-      setStatus('Whitelist saved! Starting main interface...');
-    } else if (input.toLowerCase() === 'q') {
-      process.exit(0);
+  const handleSend = (text: string) => {
+    const current = chats[selectedChatIndex];
+    if (text && current && current.type !== 'channel') {
+      client?.sendMessage(current.id, { message: text });
+      setInput('');
     }
-  });
+  };
 
-  if (step === 'loading') {
-    return (
-      <Box padding={2}>
-        <Text>{status || 'Loading...'}</Text>
-      </Box>
-    );
-  }
+  const handleCommand = (command: string) => {
+    if (command === '/add') {
+      setStatus('Loading chats...');
+      getAllAvailableDialogs().then(dialogs => {
+        const existing = new Set(chats.map(c => String(c.id)));
+        setAllDialogs(dialogs.filter((d: any) => !existing.has(String(d.id))));
+        setShowAddMode(true);
+        setAddCursor(0);
+        setSelectedToAdd([]);
+        setStatus('');
+      });
+    }
+  };
 
-  if (step === 'main') {
-    return (
-      <Box flexDirection="column" height="100%" padding={1}>
-        <Text bold color="green">✅ Focused Telegram TUI</Text>
-        <Text>Whitelisted chats: {whitelisted.length}</Text>
-        <Box flexDirection="row" flexGrow={1} marginTop={1}>
-          <Box width="35%" borderStyle="single" borderColor="blue" padding={1}>
-            <Text bold>Whitelisted Chats:</Text>
-            {whitelisted.map((item, i) => (
-              <Text key={i}>• {item.name} ({item.type})\n</Text>
-            ))}
-            {whitelisted.length === 0 && <Text dimColor>None yet</Text>}
-          </Box>
-          <Box flexGrow={1} borderStyle="single" borderColor="gray" padding={1}>
-            <Text>Main chat view (coming next)</Text>
-            <Text dimColor>Only messages from whitelisted chats will appear here.</Text>
-          </Box>
-        </Box>
-        <Box paddingTop={1}>
-          <Text dimColor>Press Ctrl+C to quit • Run again to re-setup if needed</Text>
-        </Box>
-      </Box>
-    );
-  }
+  const currentChat = chats[selectedChatIndex];
+  const isReadOnly = currentChat?.type === 'channel';
 
-  // Setup screen
   return (
-    <Box flexDirection="column" padding={2}>
-      <Text bold color="yellow">📋 Whitelist Setup (First Run)</Text>
-      <Text>Select chats/channels/groups you want to see (Space to toggle, Enter to save):</Text>
-      <Text dimColor>Use ↑↓ or j/k • q to quit</Text>
-
-      <Box flexDirection="column" marginY={1}>
-        {dialogs.map((dialog, index) => (
-          <Text key={index} color={cursor === index ? 'cyan' : undefined}>
-            {selected.includes(index) ? '✓' : '○'} {dialog.name} 
-            <Text dimColor> ({dialog.type}) {dialog.unreadCount ? `(${dialog.unreadCount})` : ''}</Text>
-          </Text>
-        ))}
+    <Box flexDirection="column" height="100%">
+      <Box paddingX={1}>
+        <Text bold color="green">📟 Focused Telegram TUI</Text>
+        <Text dimColor> ↑↓ navigate • r react • /add new chat</Text>
       </Box>
 
-      <Text dimColor>Selected: {selected.length} chats</Text>
-      {status && <Text color="red">{status}</Text>}
+      <Box flexDirection="row" flexGrow={1}>
+        <Sidebar chats={chats} selectedIndex={selectedChatIndex} />
+        <ChatView 
+          currentChat={currentChat}
+          messages={messages}
+          input={input}
+          status={status}
+          isChannel={isReadOnly}
+        />
+      </Box>
+
+      <ReactionPicker visible={showReactionPicker} cursor={reactionCursor} />
+
+      {showAddMode && (
+        <AddChatModal 
+          visible={showAddMode}
+          dialogs={allDialogs}
+          cursor={addCursor}
+          selected={selectedToAdd}
+          onClose={() => setShowAddMode(false)}
+          onConfirm={(toAdd) => {
+            const newChats = [...chats, ...toAdd];
+            saveConfig({ whitelisted: newChats.map(({displayType, ...rest}) => rest) });
+            setChats(newChats);
+            setShowAddMode(false);
+            setStatus(`Added ${toAdd.length} chats!`);
+          }}
+        />
+      )}
+
+      <InputHandler
+        onNavigateUp={() => setSelectedChatIndex(p => Math.max(0, p - 1))}
+        onNavigateDown={() => setSelectedChatIndex(p => Math.min(chats.length - 1, p + 1))}
+        onSend={handleSend}
+        onCommand={handleCommand}
+        onType={(char) => setInput(prev => prev + char)}
+        onBackspace={() => setInput(prev => prev.slice(0, -1))}
+        onReaction={() => {
+          if (messages.length > 0) setShowReactionPicker(true);
+        }}
+        disabled={showAddMode || showReactionPicker}
+      />
+
+      <Box padding={1}>
+        <Text dimColor>Status: {status || 'Ready'}</Text>
+      </Box>
     </Box>
   );
 };
