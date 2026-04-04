@@ -3,3 +3,9 @@ node_modules
 session
 dist
 config.json
+.codex
+.idea
+.vscode
+.DS_Store
+*.log
+*.tmp
