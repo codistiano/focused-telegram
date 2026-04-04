@@ -29,11 +29,25 @@ export interface DialogSummary {
   username?: string;
   unreadCount: number;
   folderId?: number;
+  archived: boolean;
+  isBot: boolean;
+  isContact: boolean;
 }
 
 export interface FolderSummary {
   id: number;
   title: string;
+  contacts?: boolean;
+  nonContacts?: boolean;
+  groups?: boolean;
+  broadcasts?: boolean;
+  bots?: boolean;
+  excludeMuted?: boolean;
+  excludeRead?: boolean;
+  excludeArchived?: boolean;
+  includePeerIds: string[];
+  pinnedPeerIds: string[];
+  excludePeerIds: string[];
 }
 
 export interface MessageSummary {
@@ -96,18 +110,25 @@ function ensureClient(): TelegramClient {
   return client;
 }
 
+function mapDialogSummary(dialog: any): DialogSummary {
+  return {
+    id: String(dialog.id ?? ''),
+    name: dialog.name || 'Unnamed',
+    type: dialog.isChannel ? 'channel' : dialog.isGroup ? 'group' : 'chat',
+    username: dialog.entity?.username,
+    unreadCount: dialog.unreadCount || 0,
+    folderId: dialog.folderId,
+    archived: Boolean(dialog.archived ?? dialog.folderId !== undefined),
+    isBot: Boolean(dialog.entity?.bot),
+    isContact: Boolean(dialog.entity?.contact),
+  };
+}
+
 export async function getAllDialogs(): Promise<DialogSummary[]> {
   const tg = ensureClient();
   const dialogs = await tg.getDialogs({ limit: 300 });
 
-  return dialogs.map((dialog) => ({
-    id: String(dialog.id ?? ''),
-    name: dialog.name || 'Unnamed',
-    type: dialog.isChannel ? 'channel' : dialog.isGroup ? 'group' : 'chat',
-    username: (dialog.entity as { username?: string } | undefined)?.username,
-    unreadCount: dialog.unreadCount || 0,
-    folderId: dialog.folderId,
-  }));
+  return dialogs.map((dialog) => mapDialogSummary(dialog));
 }
 
 export async function getDialogFolders(): Promise<FolderSummary[]> {
@@ -116,9 +137,33 @@ export async function getDialogFolders(): Promise<FolderSummary[]> {
 
   const folders: FolderSummary[] = [];
   for (const filter of result.filters || []) {
-    if (filter instanceof Api.DialogFilter && typeof filter.id === 'number') {
+    if (
+      (filter instanceof Api.DialogFilter || filter instanceof Api.DialogFilterChatlist) &&
+      typeof filter.id === 'number'
+    ) {
       const title = typeof filter.title === 'string' ? filter.title : (filter.title as { text?: string })?.text || `Folder ${filter.id}`;
-      folders.push({ id: filter.id, title });
+      const includePeerIds = await Promise.all((filter.includePeers || []).map((peer) => tg.getPeerId(peer)));
+      const pinnedPeerIds = await Promise.all((filter.pinnedPeers || []).map((peer) => tg.getPeerId(peer)));
+      const excludePeerIds =
+        filter instanceof Api.DialogFilter
+          ? await Promise.all((filter.excludePeers || []).map((peer) => tg.getPeerId(peer)))
+          : [];
+
+      folders.push({
+        id: filter.id,
+        title,
+        contacts: filter instanceof Api.DialogFilter ? filter.contacts : undefined,
+        nonContacts: filter instanceof Api.DialogFilter ? filter.nonContacts : undefined,
+        groups: filter instanceof Api.DialogFilter ? filter.groups : undefined,
+        broadcasts: filter instanceof Api.DialogFilter ? filter.broadcasts : undefined,
+        bots: filter instanceof Api.DialogFilter ? filter.bots : undefined,
+        excludeMuted: filter instanceof Api.DialogFilter ? filter.excludeMuted : undefined,
+        excludeRead: filter instanceof Api.DialogFilter ? filter.excludeRead : undefined,
+        excludeArchived: filter instanceof Api.DialogFilter ? filter.excludeArchived : undefined,
+        includePeerIds,
+        pinnedPeerIds,
+        excludePeerIds,
+      });
     }
   }
 

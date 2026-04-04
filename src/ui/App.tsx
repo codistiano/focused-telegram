@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text } from 'ink';
 import { loadConfig, saveConfig, WhitelistedItem } from '../config';
 import {
   DialogSummary,
@@ -17,28 +17,15 @@ import {
 import SetupScreen, { SelectableItem } from './components/SetupScreen';
 import MainScreen from './components/MainScreen';
 import { getWindowedRange } from './lib/uiUtils';
+import { useMainInput } from './hooks/useMainInput';
+import { buildEffectiveChats, toDialogItem, toFolderItem } from './lib/whitelist';
 
 type Step = 'loading' | 'setup' | 'main';
 type FocusPane = 'chats' | 'messages' | 'composer';
 
-const QUICK_REACTIONS = ['👍', '❤️', '🔥', '✅'];
 const SETUP_WINDOW = 30;
 const CHAT_WINDOW = 18;
-const MESSAGE_WINDOW = 18;
 const ADD_WINDOW = 20;
-
-const toFolderItem = (folder: FolderSummary): SelectableItem => ({
-  id: `folder:${folder.id}`,
-  name: `📁 ${folder.title}`,
-  type: 'folder',
-});
-
-const toDialogItem = (dialog: DialogSummary): SelectableItem => ({
-  id: dialog.id,
-  name: dialog.name,
-  type: dialog.type,
-  username: dialog.username,
-});
 
 const App: React.FC = () => {
   const [step, setStep] = useState<Step>('loading');
@@ -70,16 +57,7 @@ const App: React.FC = () => {
 
   const setupOptions = useMemo<SelectableItem[]>(() => [...folders.map(toFolderItem), ...dialogs.map(toDialogItem)], [dialogs, folders]);
 
-  const effectiveChats = useMemo(() => {
-    const directChatIds = new Set(whitelisted.filter((w) => w.type !== 'folder').map((w) => w.id));
-
-    for (const entry of whitelisted.filter((w) => w.type === 'folder')) {
-      const folderId = Number(entry.id.replace('folder:', ''));
-      dialogs.filter((dialog) => dialog.folderId === folderId).forEach((dialog) => directChatIds.add(dialog.id));
-    }
-
-    return dialogs.filter((dialog) => directChatIds.has(dialog.id));
-  }, [dialogs, whitelisted]);
+  const effectiveChats = useMemo(() => buildEffectiveChats(dialogs, folders, whitelisted), [dialogs, folders, whitelisted]);
 
   const activeDialog = useMemo(() => {
     if (activeDialogId) {
@@ -95,7 +73,6 @@ const App: React.FC = () => {
 
   const setupRange = getWindowedRange(setupCursor, setupOptions.length, SETUP_WINDOW);
   const chatRange = getWindowedRange(chatCursor, effectiveChats.length, CHAT_WINDOW);
-  const messageRange = getWindowedRange(messageCursor, messages.length, MESSAGE_WINDOW);
   const addRange = getWindowedRange(addCursor, addOptions.length, ADD_WINDOW);
 
   const persistWhitelist = (next: WhitelistedItem[]) => {
@@ -107,6 +84,10 @@ const App: React.FC = () => {
     const [allDialogs, allFolders] = await Promise.all([getAllDialogs(), getDialogFolders()]);
     setDialogs(allDialogs);
     setFolders(allFolders);
+  };
+
+  const refreshActiveSendCapability = async (dialogId: string) => {
+    setSendCapability(await getSendCapability(dialogId));
   };
 
   const updateFreshness = (chatId: string, latestId: number, isActive: boolean) => {
@@ -162,7 +143,7 @@ const App: React.FC = () => {
 
     void (async () => {
       await loadMessages(activeDialog.id, false, true);
-      setSendCapability(await getSendCapability(activeDialog.id));
+      await refreshActiveSendCapability(activeDialog.id);
     })();
   }, [step, activeDialog?.id]);
 
@@ -179,131 +160,54 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, [step, effectiveChats, activeDialog?.id]);
 
-  useInput((input, key) => {
-    if (step === 'setup') {
-      if (key.upArrow || input === 'k') setSetupCursor((prev) => Math.max(0, prev - 1));
-      else if (key.downArrow || input === 'j') setSetupCursor((prev) => Math.min(setupOptions.length - 1, prev + 1));
-      else if (input === ' ') {
-        setSelectedSetup((prev) => (prev.includes(setupCursor) ? prev.filter((i) => i !== setupCursor) : [...prev, setupCursor]));
-      } else if (key.return) {
-        persistWhitelist(selectedSetup.map((idx) => setupOptions[idx]));
-        setStep('main');
-      } else if (input === 'q') process.exit(0);
-      return;
-    }
-
-    if (step !== 'main') return;
-
-    if (logoutMode) {
-      if (input.toLowerCase() === 'y') {
-        void (async () => {
-          setStatus('Logging out...');
-          await logoutAndClearSession();
-          saveConfig({ whitelisted: [] });
-          setStatus('Logged out. Restart app to sign in with another account.');
-          process.exit(0);
-        })();
-      } else if (input.toLowerCase() === 'n' || key.escape) {
-        setLogoutMode(false);
-      }
-      return;
-    }
-
-    if (addMode) {
-      if (key.upArrow || input === 'k') setAddCursor((prev) => Math.max(0, prev - 1));
-      else if (key.downArrow || input === 'j') setAddCursor((prev) => Math.min(addOptions.length - 1, prev + 1));
-      else if (input === ' ') {
-        setAddSelected((prev) => (prev.includes(addCursor) ? prev.filter((i) => i !== addCursor) : [...prev, addCursor]));
-      } else if (key.return) {
-        const additions = addSelected.map((idx) => addOptions[idx]);
-        if (additions.length) {
-          persistWhitelist([...whitelisted, ...additions]);
-          setStatus(`Added ${additions.length} whitelist item(s).`);
-        }
-        setAddMode(false);
-        setAddCursor(0);
-        setAddSelected([]);
-      } else if (key.escape || input === 'q') {
-        setAddMode(false);
-        setAddSelected([]);
-      }
-      return;
-    }
-
-    if (showReactionPicker) {
-      const idx = Number(input) - 1;
-      if (idx >= 0 && idx < QUICK_REACTIONS.length && messages[messageCursor] && activeDialog) {
-        void sendReactionToMessage(activeDialog.id, messages[messageCursor].id, QUICK_REACTIONS[idx]);
-        setStatus(`Reacted with ${QUICK_REACTIONS[idx]}`);
-      }
-      if (key.escape || key.return || input) setShowReactionPicker(false);
-      return;
-    }
-
-    if (focus === 'composer') {
-      if (key.return && activeDialog) {
-        if (!sendCapability.canSend) {
-          setStatus(sendCapability.reason || 'Cannot send message in this chat.');
-          return;
-        }
-
-        const text = composerText.trim();
-        if (!text) return;
-
-        void (async () => {
-          try {
-            await sendMessageToDialog(activeDialog.id, text);
-            setComposerText('');
-            await loadMessages(activeDialog.id, true, true);
-            setStatus('Message sent.');
-          } catch (err) {
-            setStatus(`Failed to send message: ${(err as Error).message}`);
-          }
-        })();
-        return;
-      }
-
-      if (key.escape) {
-        setFocus('messages');
-        return;
-      }
-
-      if (key.backspace || key.delete) {
-        setComposerText((prev) => prev.slice(0, -1));
-        return;
-      }
-
-      if (!key.ctrl && !key.meta && input) setComposerText((prev) => prev + input);
-      return;
-    }
-
-    if (input === 'q') process.exit(0);
-    else if (input === 'a') setAddMode(true);
-    else if (input === 'l') setLogoutMode(true);
-    else if (input === 'i') {
-      if (!activeDialog || !sendCapability.canSend) setStatus(sendCapability.reason || 'This chat is read-only.');
-      else setFocus('composer');
-    } else if (key.tab) setFocus((prev) => (prev === 'chats' ? 'messages' : 'chats'));
-    else if (input === 'R') {
-      void refreshDialogsAndFolders();
-      if (activeDialog) void loadMessages(activeDialog.id);
-    } else if (input === 'r' && messages[messageCursor]) setShowReactionPicker(true);
-    else if (focus === 'chats') {
-      if (key.upArrow || input === 'k') setChatCursor((prev) => Math.max(0, prev - 1));
-      else if (key.downArrow || input === 'j') setChatCursor((prev) => Math.min(effectiveChats.length - 1, prev + 1));
-      else if (key.return && effectiveChats[chatCursor]) {
-        const chat = effectiveChats[chatCursor];
-        setActiveDialogId(chat.id);
-        setNewMessageByChat((prev) => ({ ...prev, [chat.id]: false }));
-        void (async () => {
-          await loadMessages(chat.id, false, true);
-          setSendCapability(await getSendCapability(chat.id));
-        })();
-      }
-    } else if (focus === 'messages') {
-      if (key.upArrow || input === 'k') setMessageCursor((prev) => Math.max(0, prev - 1));
-      else if (key.downArrow || input === 'j') setMessageCursor((prev) => Math.min(messages.length - 1, prev + 1));
-    }
+  useMainInput({
+    step,
+    setupCursor,
+    setSetupCursor,
+    setupOptions,
+    selectedSetup,
+    setSelectedSetup,
+    persistWhitelist,
+    setStep,
+    logoutMode,
+    setLogoutMode,
+    addMode,
+    setAddMode,
+    addCursor,
+    setAddCursor,
+    addOptions,
+    addSelected,
+    setAddSelected,
+    whitelisted,
+    showReactionPicker,
+    setShowReactionPicker,
+    messages,
+    messageCursor,
+    focus,
+    setFocus,
+    activeDialog,
+    sendCapability,
+    composerText,
+    setComposerText,
+    setStatus,
+    refreshDialogsAndFolders,
+    loadMessages,
+    sendMessageToActiveDialog: sendMessageToDialog,
+    reactToActiveMessage: sendReactionToMessage,
+    performLogout: async () => {
+      setStatus('Logging out...');
+      await logoutAndClearSession();
+      saveConfig({ whitelisted: [] });
+      setStatus('Logged out. Restart app to sign in with another account.');
+      process.exit(0);
+    },
+    effectiveChats,
+    chatCursor,
+    setChatCursor,
+    setActiveDialogId,
+    setNewMessageByChat,
+    setMessageCursor,
+    refreshActiveSendCapability,
   });
 
   if (step === 'loading') {
@@ -337,8 +241,6 @@ const App: React.FC = () => {
       newMessageByChat={newMessageByChat}
       messages={messages}
       messageCursor={messageCursor}
-      visibleMessageStart={messageRange.start}
-      visibleMessageEnd={messageRange.end}
       composerText={composerText}
       sendCapability={sendCapability}
       showReactionPicker={showReactionPicker}

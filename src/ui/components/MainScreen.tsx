@@ -1,9 +1,10 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useStdout } from 'ink';
 import { DialogSummary, MessageSummary, SendCapability } from '../../client';
 import { truncate, formatTime } from '../lib/uiUtils';
 import { SelectableItem } from './SetupScreen';
 import ConfirmModal from './ConfirmModal';
+import { buildVisibleMessages, getMessageLineBudget, getMessagePaneWidth } from '../lib/messageLayout';
 
 interface MainScreenProps {
   focus: 'chats' | 'messages' | 'composer';
@@ -13,8 +14,6 @@ interface MainScreenProps {
   newMessageByChat: Record<string, boolean>;
   messages: MessageSummary[];
   messageCursor: number;
-  visibleMessageStart: number;
-  visibleMessageEnd: number;
   composerText: string;
   sendCapability: SendCapability;
   showReactionPicker: boolean;
@@ -33,11 +32,21 @@ interface MainScreenProps {
 const CHAT_PANE_WIDTH = 38;
 
 const MainScreen: React.FC<MainScreenProps> = (props) => {
+  const { stdout } = useStdout();
   const visibleChats = props.chats.slice(props.chatVisibleStart, props.chatVisibleEnd);
-  const visibleMessages = props.messages.slice(props.visibleMessageStart, props.visibleMessageEnd);
   const visibleAdd = props.addOptions.slice(props.addVisibleStart, props.addVisibleEnd);
-
   const activeDialog = props.chats.find((d) => d.id === props.activeDialogId);
+  const paneWidth = getMessagePaneWidth(stdout.columns || 120, CHAT_PANE_WIDTH);
+  const bodyWidth = Math.max(10, paneWidth - 6);
+  const lineBudget = getMessageLineBudget(stdout.rows || 24);
+  const visibleMessages = buildVisibleMessages(props.messages, props.messageCursor, bodyWidth, lineBudget, (message) => {
+    const sender = message.outgoing ? 'You' : truncate(message.sender, 12);
+    const mediaTag = message.hasMedia ? ` [${message.mediaKind}]` : '';
+    return `${formatTime(message.date)} ${sender}${mediaTag}`;
+  });
+  const hasMessagesAbove = visibleMessages.length > 0 && visibleMessages[0]?.message.id !== props.messages[0]?.id;
+  const hasMessagesBelow =
+    visibleMessages.length > 0 && visibleMessages[visibleMessages.length - 1]?.message.id !== props.messages[props.messages.length - 1]?.id;
 
   return (
     <Box flexDirection="column" padding={1}>
@@ -63,20 +72,36 @@ const MainScreen: React.FC<MainScreenProps> = (props) => {
           {props.chats.length === 0 ? <Text dimColor>No chats in whitelist yet. Press a to add.</Text> : null}
         </Box>
 
-        <Box marginLeft={1} flexGrow={1} borderStyle="single" borderColor={props.focus === 'messages' ? 'cyan' : 'gray'} paddingX={1} flexDirection="column">
+        <Box
+          marginLeft={1}
+          width={paneWidth}
+          flexGrow={1}
+          borderStyle="single"
+          borderColor={props.focus === 'messages' ? 'cyan' : 'gray'}
+          paddingX={1}
+          flexDirection="column"
+        >
           <Text bold>Messages</Text>
-          {visibleMessages.map((message, idx) => {
-            const absoluteIndex = props.visibleMessageStart + idx;
-            const isCursor = absoluteIndex === props.messageCursor;
-            const sender = message.outgoing ? 'You' : truncate(message.sender, 12);
-            const mediaTag = message.hasMedia ? ` [${message.mediaKind}]` : '';
+          {hasMessagesAbove ? <Text dimColor>... older messages above ...</Text> : null}
+          {visibleMessages.map((entry) => {
+            const { message, isCursor, header, bodyLines } = entry;
 
             return (
-              <Text key={message.id} inverse={props.focus === 'messages' && isCursor}>
-                {formatTime(message.date)} {sender}: {truncate(message.text, 72)}{mediaTag}
-              </Text>
+              <Box key={message.id} flexDirection="column" marginBottom={1}>
+                <Text color={props.focus === 'messages' && isCursor ? 'cyan' : undefined}>
+                  {isCursor ? '▶ ' : '  '}
+                  {header}
+                </Text>
+                {bodyLines.map((line, lineIndex) => (
+                  <Text key={`${message.id}-${lineIndex}`} wrap="truncate-end">
+                    {'   '}
+                    {line}
+                  </Text>
+                ))}
+              </Box>
             );
           })}
+          {hasMessagesBelow ? <Text dimColor>... newer messages below ...</Text> : null}
           {props.messages.length === 0 ? <Text dimColor>No messages loaded.</Text> : null}
         </Box>
       </Box>
