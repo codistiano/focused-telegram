@@ -67,7 +67,7 @@ export async function initClient() {
   await client.start({
     phoneNumber: async () =>
       new Promise((resolve) => {
-        process.stdout.write('📱 Enter your phone number (+2519XXXXXXXXXX): ');
+        process.stdout.write('📱 Enter your phone number (+1XXXXXXXXXXXXX): ');
         process.stdin.once('data', (data) => resolve(data.toString().trim()));
       }),
     phoneCode: async () =>
@@ -180,6 +180,22 @@ export async function sendReactionToMessage(dialogId: string, messageId: number,
       addToRecent: true,
     })
   );
+}
+
+
+export async function logoutAndClearSession(): Promise<void> {
+  const tg = ensureClient();
+
+  try {
+    await tg.invoke(new Api.auth.LogOut());
+  } finally {
+    await tg.disconnect();
+    client = null;
+
+    if (fs.existsSync(SESSION_PATH)) {
+      fs.unlinkSync(SESSION_PATH);
+    }
+  }
 }
 
 export async function getSendCapability(dialogId: string): Promise<SendCapability> {

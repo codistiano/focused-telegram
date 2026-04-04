@@ -12,6 +12,7 @@ import {
   getSendCapability,
   sendMessageToDialog,
   sendReactionToMessage,
+  logoutAndClearSession,
 } from '../client';
 import SetupScreen, { SelectableItem } from './components/SetupScreen';
 import MainScreen from './components/MainScreen';
@@ -58,6 +59,7 @@ const App: React.FC = () => {
   const [showReactionPicker, setShowReactionPicker] = useState(false);
 
   const [addMode, setAddMode] = useState(false);
+  const [logoutMode, setLogoutMode] = useState(false);
   const [addCursor, setAddCursor] = useState(0);
   const [addSelected, setAddSelected] = useState<number[]>([]);
 
@@ -186,13 +188,26 @@ const App: React.FC = () => {
       } else if (key.return) {
         persistWhitelist(selectedSetup.map((idx) => setupOptions[idx]));
         setStep('main');
-      } else if (input === 'q') {
-        process.exit(0);
-      }
+      } else if (input === 'q') process.exit(0);
       return;
     }
 
     if (step !== 'main') return;
+
+    if (logoutMode) {
+      if (input.toLowerCase() === 'y') {
+        void (async () => {
+          setStatus('Logging out...');
+          await logoutAndClearSession();
+          saveConfig({ whitelisted: [] });
+          setStatus('Logged out. Restart app to sign in with another account.');
+          process.exit(0);
+        })();
+      } else if (input.toLowerCase() === 'n' || key.escape) {
+        setLogoutMode(false);
+      }
+      return;
+    }
 
     if (addMode) {
       if (key.upArrow || input === 'k') setAddCursor((prev) => Math.max(0, prev - 1));
@@ -262,24 +277,18 @@ const App: React.FC = () => {
       return;
     }
 
-    if (input === 'q') {
-      process.exit(0);
-    } else if (input === 'a') {
-      setAddMode(true);
-    } else if (input === 'i') {
-      if (!activeDialog || !sendCapability.canSend) {
-        setStatus(sendCapability.reason || 'This chat is read-only.');
-      } else {
-        setFocus('composer');
-      }
-    } else if (key.tab) {
-      setFocus((prev) => (prev === 'chats' ? 'messages' : 'chats'));
-    } else if (input === 'R') {
+    if (input === 'q') process.exit(0);
+    else if (input === 'a') setAddMode(true);
+    else if (input === 'l') setLogoutMode(true);
+    else if (input === 'i') {
+      if (!activeDialog || !sendCapability.canSend) setStatus(sendCapability.reason || 'This chat is read-only.');
+      else setFocus('composer');
+    } else if (key.tab) setFocus((prev) => (prev === 'chats' ? 'messages' : 'chats'));
+    else if (input === 'R') {
       void refreshDialogsAndFolders();
       if (activeDialog) void loadMessages(activeDialog.id);
-    } else if (input === 'r' && messages[messageCursor]) {
-      setShowReactionPicker(true);
-    } else if (focus === 'chats') {
+    } else if (input === 'r' && messages[messageCursor]) setShowReactionPicker(true);
+    else if (focus === 'chats') {
       if (key.upArrow || input === 'k') setChatCursor((prev) => Math.max(0, prev - 1));
       else if (key.downArrow || input === 'j') setChatCursor((prev) => Math.min(effectiveChats.length - 1, prev + 1));
       else if (key.return && effectiveChats[chatCursor]) {
@@ -342,6 +351,7 @@ const App: React.FC = () => {
       addVisibleEnd={addRange.end}
       chatVisibleStart={chatRange.start}
       chatVisibleEnd={chatRange.end}
+      logoutMode={logoutMode}
     />
   );
 };

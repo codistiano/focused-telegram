@@ -3,6 +3,7 @@ import { Box, Text } from 'ink';
 import { DialogSummary, MessageSummary, SendCapability } from '../../client';
 import { truncate, formatTime } from '../lib/uiUtils';
 import { SelectableItem } from './SetupScreen';
+import ConfirmModal from './ConfirmModal';
 
 interface MainScreenProps {
   focus: 'chats' | 'messages' | 'composer';
@@ -26,6 +27,7 @@ interface MainScreenProps {
   addVisibleEnd: number;
   chatVisibleStart: number;
   chatVisibleEnd: number;
+  logoutMode: boolean;
 }
 
 const CHAT_PANE_WIDTH = 38;
@@ -88,8 +90,16 @@ const MainScreen: React.FC<MainScreenProps> = (props) => {
 
       {!props.sendCapability.canSend ? <Text color="red">Read-only: {props.sendCapability.reason}</Text> : null}
       {props.showReactionPicker ? <Text color="yellow">React: 1)👍 2)❤️ 3)🔥 4)✅</Text> : null}
-      <Text dimColor>Tab switch pane • Enter open/send • a add whitelist • r react • Shift+R refresh • q quit</Text>
+      <Text dimColor>Tab switch pane • Enter open/send • a add whitelist • r react • l logout • Shift+R refresh • q quit</Text>
       {props.status ? <Text color="yellow">{props.status}</Text> : null}
+
+
+      {props.logoutMode ? (
+        <ConfirmModal
+          title="Logout current account"
+          description="This will remove the saved session so next start asks for new account login."
+        />
+      ) : null}
 
       {props.addMode ? (
         <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1} marginTop={1}>
