@@ -414,7 +414,7 @@ const App: React.FC = () => {
   if (step === 'loading') {
     return (
       <Box flexDirection="column" padding={1}>
-        <Text bold color="cyan">Focused Telegram TUI</Text>
+        <Text bold color="cyan">Focused Telegram</Text>
         <Text>{status || 'Loading…'}</Text>
       </Box>
     );

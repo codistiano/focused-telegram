@@ -5,7 +5,7 @@ import { initClient } from './client';
 
 (async () => {
   try {
-    console.log('🚀 Starting Focused Telegram TUI...\n');
+    console.log('🚀 Starting Focused Telegram...\n');
 
     await initClient();
 
