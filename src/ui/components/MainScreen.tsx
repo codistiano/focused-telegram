@@ -1,7 +1,9 @@
 import React from 'react';
 import { Box, Text, useStdout } from 'ink';
 import { DialogSummary, MessageSummary, SendCapability } from '../../client';
-import { truncate, formatTime } from '../lib/uiUtils';
+import { extractFirstUrl, toTerminalHyperlink } from '../lib/links';
+import { truncate, formatBytes, formatTime } from '../lib/uiUtils';
+import { getMessageStorageKey } from '../lib/messageKeys';
 import { SelectableItem } from './SetupScreen';
 import ConfirmModal from './ConfirmModal';
 import { buildVisibleMessages, getMessageLineBudget, getMessagePaneWidth } from '../lib/messageLayout';
@@ -20,6 +22,7 @@ interface MainScreenProps {
   sendCapability: SendCapability;
   showReactionPicker: boolean;
   status: string;
+  downloadedFilesByMessage: Record<string, string>;
   addMode: boolean;
   addOptions: SelectableItem[];
   addCursor: number;
@@ -43,13 +46,21 @@ const MainScreen: React.FC<MainScreenProps> = (props) => {
   const visibleChats = props.chats.slice(props.chatVisibleStart, props.chatVisibleEnd);
   const visibleAdd = props.addOptions.slice(props.addVisibleStart, props.addVisibleEnd);
   const activeDialog = props.chats.find((d) => d.id === props.activeDialogId);
+  const selectedMessage = props.messages[props.messageCursor];
+  const selectedDocument = selectedMessage?.mediaKind === 'document' && selectedMessage.fileName ? selectedMessage : null;
+  const selectedLink = selectedMessage ? selectedMessage.linkUrl || extractFirstUrl(selectedMessage.text) : undefined;
+  const selectedDocumentPath =
+    selectedDocument && props.activeDialogId
+      ? props.downloadedFilesByMessage[getMessageStorageKey(props.activeDialogId, selectedDocument.id)]
+      : undefined;
   const paneWidth = stackedLayout ? frameWidth : getMessagePaneWidth(frameWidth, chatPaneWidth);
   const bodyWidth = Math.max(10, paneWidth - 6);
   const lineBudget = getMessageLineBudget(stdout.rows || 24);
   const visibleMessages = buildVisibleMessages(props.messages, props.messageCursor, bodyWidth, lineBudget, (message) => {
     const sender = message.outgoing ? 'You' : truncate(message.sender, 12);
     const mediaTag = message.hasMedia ? ` [${message.mediaKind}]` : '';
-    return `${formatTime(message.date)} ${sender}${mediaTag}`;
+    const fileTag = message.fileName ? ` ${truncate(message.fileName, 20)}` : '';
+    return `${formatTime(message.date)} ${sender}${mediaTag}${fileTag}`;
   });
   const hasMessagesAbove = visibleMessages.length > 0 && visibleMessages[0]?.message.id !== props.messages[0]?.id;
   const hasMessagesBelow =
@@ -58,8 +69,8 @@ const MainScreen: React.FC<MainScreenProps> = (props) => {
   return (
     <Box flexDirection="column" alignItems="center" paddingY={1}>
       <Box width={frameWidth} flexDirection="column">
-        <AsciiIntro />
-        <Box justifyContent="flex-end">
+        <Box justifyContent="space-between">
+        <AsciiIntro />  
           <Text dimColor>{activeDialog ? `Active: ${truncate(activeDialog.name, 30)}` : 'No active chat'}</Text>
         </Box>
 
@@ -137,8 +148,20 @@ const MainScreen: React.FC<MainScreenProps> = (props) => {
 
         {!props.sendCapability.canSend ? <Text color="red">Read-only: {props.sendCapability.reason}</Text> : null}
         {props.showReactionPicker ? <Text color="yellow">React: 1)👍 2)❤️ 3)🔥 4)✅</Text> : null}
+        {selectedDocument ? (
+          <Text color="cyan">
+            File: {selectedDocument.fileName}
+            {selectedDocument.fileSize ? ` • ${formatBytes(selectedDocument.fileSize)}` : ''}
+            {selectedDocumentPath ? ' • downloaded • o open' : ' • f download • o open'}
+          </Text>
+        ) : null}
+        {selectedLink ? (
+          <Text color="blue">
+            Link: {toTerminalHyperlink(truncate(selectedLink, Math.max(16, frameWidth - 14)), selectedLink)} • o open
+          </Text>
+        ) : null}
         <Text dimColor>
-          Tab pane • Enter open/send • a add • d remove • e edit • x delete • r react • l logout • Shift+R refresh • q quit
+          Tab pane • Enter open/send • a add • d remove • e edit • x delete • r react • f download file • o open link/file • l logout • Shift+R refresh • q quit
         </Text>
         {props.editingMessageId ? <Text color="magenta">Editing message #{props.editingMessageId}. Press Enter to save.</Text> : null}
         {props.status ? <Text color="yellow">{props.status}</Text> : null}

@@ -57,6 +57,10 @@ export interface MessageSummary {
   text: string;
   hasMedia: boolean;
   mediaKind?: string;
+  linkUrl?: string;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
   outgoing: boolean;
 }
 
@@ -108,6 +112,23 @@ export async function initClient() {
 function ensureClient(): TelegramClient {
   if (!client) throw new Error('Client not initialized');
   return client;
+}
+
+function getDocumentFileName(document: Api.Document): string | undefined {
+  const attribute = document.attributes.find((item) => item instanceof Api.DocumentAttributeFilename);
+  return attribute instanceof Api.DocumentAttributeFilename ? attribute.fileName : undefined;
+}
+
+async function getMessageById(dialogId: string, messageId: number) {
+  const tg = ensureClient();
+  const result = await tg.getMessages(dialogId, { ids: messageId });
+  const message = Array.isArray(result) ? result[0] : undefined;
+
+  if (!message?.id) {
+    throw new Error(`Message #${messageId} not found.`);
+  }
+
+  return message;
 }
 
 function mapDialogSummary(dialog: any): DialogSummary {
@@ -184,13 +205,30 @@ export async function getMessagesForDialog(dialogId: string, limit = 25): Promis
 
     if (message.media) {
       if (message.media instanceof Api.MessageMediaPhoto) mediaKind = 'photo';
-      else if (message.media instanceof Api.MessageMediaDocument) mediaKind = 'document';
+      else if (message.media instanceof Api.MessageMediaDocument) {
+        mediaKind = 'document';
+      }
       else if (message.media instanceof Api.MessageMediaWebPage) mediaKind = 'link';
       else mediaKind = 'media';
     }
 
     const senderEntity = message.sender as { firstName?: string; username?: string } | undefined;
     const sender = message.out ? 'You' : senderEntity?.firstName || senderEntity?.username || 'Unknown';
+
+    let fileName: string | undefined;
+    let fileSize: number | undefined;
+    let mimeType: string | undefined;
+    let linkUrl: string | undefined;
+
+    if (message.media instanceof Api.MessageMediaDocument && message.media.document instanceof Api.Document) {
+      fileName = getDocumentFileName(message.media.document);
+      fileSize = Number(message.media.document.size);
+      mimeType = message.media.document.mimeType;
+    }
+
+    if (message.media instanceof Api.MessageMediaWebPage && message.media.webpage instanceof Api.WebPage) {
+      linkUrl = message.media.webpage.url;
+    }
 
     mapped.push({
       id: message.id,
@@ -199,6 +237,10 @@ export async function getMessagesForDialog(dialogId: string, limit = 25): Promis
       text: text.length > 0 ? text : hasMedia ? '[Media message]' : '[Empty message]',
       hasMedia,
       mediaKind,
+      linkUrl,
+      fileName,
+      fileSize,
+      mimeType,
       outgoing: Boolean(message.out),
     });
   }
@@ -237,6 +279,30 @@ export async function sendReactionToMessage(dialogId: string, messageId: number,
       addToRecent: true,
     })
   );
+}
+
+export interface DownloadedDocument {
+  fileName: string;
+  mimeType?: string;
+  path: string;
+}
+
+export async function downloadDocumentFromDialog(dialogId: string, messageId: number, outputPath: string): Promise<DownloadedDocument> {
+  const tg = ensureClient();
+  const message = await getMessageById(dialogId, messageId);
+
+  if (!(message.media instanceof Api.MessageMediaDocument) || !(message.media.document instanceof Api.Document)) {
+    throw new Error('Selected message does not contain a downloadable document.');
+  }
+
+  const fileName = getDocumentFileName(message.media.document) || `document-${messageId}`;
+  await tg.downloadMedia(message, { outputFile: outputPath });
+
+  return {
+    fileName,
+    mimeType: message.media.document.mimeType,
+    path: outputPath,
+  };
 }
 
 

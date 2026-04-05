@@ -48,3 +48,26 @@ export const buildEffectiveChats = (
 
   return Array.from(chatsById.values());
 };
+
+export const findWhitelistedFolderForChat = (
+  chatId: string,
+  folders: FolderSummary[],
+  whitelisted: WhitelistedItem[]
+): WhitelistedItem | null => {
+  for (const item of whitelisted) {
+    if (item.type !== 'folder') continue;
+
+    const folder = folders.find((entry) => `folder:${entry.id}` === item.id);
+    if (!folder) continue;
+
+    const explicitPeerIds = [...folder.pinnedPeerIds, ...folder.includePeerIds].filter(
+      (peerId) => !folder.excludePeerIds.includes(peerId)
+    );
+
+    if (explicitPeerIds.includes(chatId)) {
+      return item;
+    }
+  }
+
+  return null;
+};

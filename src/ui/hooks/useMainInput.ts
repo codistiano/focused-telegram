@@ -1,8 +1,11 @@
 import { Dispatch, SetStateAction } from 'react';
 import { useInput } from 'ink';
 import { WhitelistedItem } from '../../config';
-import { DialogSummary, MessageSummary, SendCapability } from '../../client';
+import { DialogSummary, FolderSummary, MessageSummary, SendCapability } from '../../client';
 import { SelectableItem } from '../components/SetupScreen';
+import { extractFirstUrl } from '../lib/links';
+import { getMessageStorageKey } from '../lib/messageKeys';
+import { findWhitelistedFolderForChat } from '../lib/whitelist';
 
 interface MainInputOptions {
   step: 'loading' | 'setup' | 'main';
@@ -12,6 +15,10 @@ interface MainInputOptions {
   selectedSetup: number[];
   setSelectedSetup: Dispatch<SetStateAction<number[]>>;
   persistWhitelist: (next: WhitelistedItem[]) => void;
+  downloadDirectory: string;
+  setDownloadDirectory: Dispatch<SetStateAction<string>>;
+  isEditingDownloadDirectory: boolean;
+  setIsEditingDownloadDirectory: Dispatch<SetStateAction<boolean>>;
   setStep: Dispatch<SetStateAction<'loading' | 'setup' | 'main'>>;
   logoutMode: boolean;
   setLogoutMode: Dispatch<SetStateAction<boolean>>;
@@ -23,6 +30,7 @@ interface MainInputOptions {
   addSelected: number[];
   setAddSelected: Dispatch<SetStateAction<number[]>>;
   whitelisted: WhitelistedItem[];
+  folders: FolderSummary[];
   showReactionPicker: boolean;
   setShowReactionPicker: Dispatch<SetStateAction<boolean>>;
   messages: MessageSummary[];
@@ -50,6 +58,10 @@ interface MainInputOptions {
   refreshActiveSendCapability: (dialogId: string) => Promise<void>;
   editingMessageId: number | null;
   setEditingMessageId: Dispatch<SetStateAction<number | null>>;
+  downloadedFilesByMessage: Record<string, string>;
+  downloadSelectedDocument: (dialogId: string, chatName: string, message: MessageSummary) => Promise<void>;
+  openSelectedLink: (message: MessageSummary) => Promise<void>;
+  openSelectedDocument: (dialogId: string, chatName: string, message: MessageSummary) => Promise<void>;
 }
 
 const QUICK_REACTIONS = ['👍', '❤️', '🔥', '✅'];
@@ -63,6 +75,10 @@ export const useMainInput = ({
   selectedSetup,
   setSelectedSetup,
   persistWhitelist,
+  downloadDirectory,
+  setDownloadDirectory,
+  isEditingDownloadDirectory,
+  setIsEditingDownloadDirectory,
   setStep,
   logoutMode,
   setLogoutMode,
@@ -74,6 +90,7 @@ export const useMainInput = ({
   addSelected,
   setAddSelected,
   whitelisted,
+  folders,
   showReactionPicker,
   setShowReactionPicker,
   messages,
@@ -101,13 +118,42 @@ export const useMainInput = ({
   refreshActiveSendCapability,
   editingMessageId,
   setEditingMessageId,
+  downloadedFilesByMessage,
+  downloadSelectedDocument,
+  openSelectedLink,
+  openSelectedDocument,
 }: MainInputOptions) => {
+  const selectedMessage = messages[messageCursor];
+  const selectedDocument = selectedMessage?.mediaKind === 'document' && selectedMessage.fileName ? selectedMessage : null;
+  const selectedLink = selectedMessage ? selectedMessage.linkUrl || extractFirstUrl(selectedMessage.text) : undefined;
+
   useInput((input, key) => {
     if (step === 'setup') {
+      if (isEditingDownloadDirectory) {
+        if (key.return) {
+          if (!downloadDirectory.trim()) {
+            setStatus('Download directory cannot be empty.');
+          } else {
+            setDownloadDirectory((prev) => prev.trim());
+            setIsEditingDownloadDirectory(false);
+            setStatus(`Download directory set to ${downloadDirectory.trim()}`);
+          }
+        } else if (key.escape) {
+          setIsEditingDownloadDirectory(false);
+        } else if (key.backspace || key.delete) {
+          setDownloadDirectory((prev) => prev.slice(0, -1));
+        } else if (!key.ctrl && !key.meta && input) {
+          setDownloadDirectory((prev) => prev + input);
+        }
+        return;
+      }
+
       if (key.upArrow || input === 'k') setSetupCursor((prev) => Math.max(0, prev - 1));
       else if (key.downArrow || input === 'j') setSetupCursor((prev) => Math.min(setupOptions.length - 1, prev + 1));
       else if (input === ' ') {
         setSelectedSetup((prev) => (prev.includes(setupCursor) ? prev.filter((i) => i !== setupCursor) : [...prev, setupCursor]));
+      } else if (input === 'p') {
+        setIsEditingDownloadDirectory(true);
       } else if (key.return) {
         persistWhitelist(selectedSetup.map((idx) => setupOptions[idx]));
         setStep('main');
@@ -209,13 +255,24 @@ export const useMainInput = ({
     else if (input === 'a') setAddMode(true);
     else if (input === 'd' && focus === 'chats' && effectiveChats[chatCursor]) {
       const selected = effectiveChats[chatCursor];
-      const next = whitelisted.filter((item) => item.id !== selected.id);
-      if (next.length === whitelisted.length) {
-        setStatus('Selected chat comes from a folder; remove the folder from whitelist to hide it.');
-      } else {
+      const directlyWhitelisted = whitelisted.some((item) => item.id === selected.id);
+
+      if (directlyWhitelisted) {
+        const next = whitelisted.filter((item) => item.id !== selected.id);
         persistWhitelist(next);
         setChatCursor((prev) => Math.max(0, Math.min(prev, next.length - 1)));
         setStatus(`Removed "${selected.name}" from whitelist.`);
+      } else {
+        const folderItem = findWhitelistedFolderForChat(selected.id, folders, whitelisted);
+
+        if (!folderItem) {
+          setStatus('Could not find the whitelisted folder that provides this chat.');
+        } else {
+          const next = whitelisted.filter((item) => item.id !== folderItem.id);
+          persistWhitelist(next);
+          setChatCursor((prev) => Math.max(0, Math.min(prev, next.length - 1)));
+          setStatus(`Removed folder "${folderItem.name}" from whitelist.`);
+        }
       }
     } else if (input === 'l') setLogoutMode(true);
     else if (input === 'i') {
@@ -226,6 +283,33 @@ export const useMainInput = ({
       void refreshDialogsAndFolders();
       if (activeDialog) void loadMessages(activeDialog.id);
     } else if (input === 'r' && messages[messageCursor]) setShowReactionPicker(true);
+    else if (input === 'f' && focus === 'messages' && activeDialog && selectedDocument) {
+      void (async () => {
+        try {
+          await downloadSelectedDocument(activeDialog.id, activeDialog.name, selectedDocument);
+        } catch (err) {
+          setStatus(`Failed to download file: ${(err as Error).message}`);
+        }
+      })();
+    } else if (input === 'o' && focus === 'messages' && selectedLink) {
+      void (async () => {
+        try {
+          await openSelectedLink(selectedMessage);
+        } catch (err) {
+          setStatus(`Failed to open link: ${(err as Error).message}`);
+        }
+      })();
+    } else if (input === 'o' && focus === 'messages' && activeDialog && selectedDocument) {
+      void (async () => {
+        try {
+          await openSelectedDocument(activeDialog.id, activeDialog.name, selectedDocument);
+        } catch (err) {
+          const hasDownloadedFile = Boolean(downloadedFilesByMessage[getMessageStorageKey(activeDialog.id, selectedDocument.id)]);
+          const fallback = hasDownloadedFile ? 'Failed to open file.' : 'Failed to download/open file.';
+          setStatus(`${fallback} ${(err as Error).message}`);
+        }
+      })();
+    }
     else if (input === 'e' && activeDialog) {
       const lastOwnMessage = [...messages].reverse().find((message) => message.outgoing);
       if (!lastOwnMessage) {

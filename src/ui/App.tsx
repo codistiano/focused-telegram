@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text } from 'ink';
 import { loadConfig, saveConfig, WhitelistedItem } from '../config';
+import { fileExists, openExternalTarget, openLocalFile, prepareDownloadPath } from '../fileActions';
 import {
+  DownloadedDocument,
   DialogSummary,
   FolderSummary,
   MessageSummary,
   SendCapability,
   deleteMessageInDialog,
+  downloadDocumentFromDialog,
   editMessageInDialog,
   getAllDialogs,
   getDialogFolders,
@@ -18,6 +21,8 @@ import {
 } from '../client';
 import SetupScreen, { SelectableItem } from './components/SetupScreen';
 import MainScreen from './components/MainScreen';
+import { extractFirstUrl } from './lib/links';
+import { getMessageStorageKey } from './lib/messageKeys';
 import { getWindowedRange } from './lib/uiUtils';
 import { useMainInput } from './hooks/useMainInput';
 import { buildEffectiveChats, toDialogItem, toFolderItem } from './lib/whitelist';
@@ -38,6 +43,8 @@ const App: React.FC = () => {
 
   const [selectedSetup, setSelectedSetup] = useState<number[]>([]);
   const [setupCursor, setSetupCursor] = useState(0);
+  const [downloadDirectory, setDownloadDirectory] = useState('');
+  const [isEditingDownloadDirectory, setIsEditingDownloadDirectory] = useState(false);
 
   const [whitelisted, setWhitelisted] = useState<WhitelistedItem[]>([]);
   const [focus, setFocus] = useState<FocusPane>('chats');
@@ -58,6 +65,7 @@ const App: React.FC = () => {
   const [sendCapability, setSendCapability] = useState<SendCapability>({ canSend: true });
   const [lastSeenByChat, setLastSeenByChat] = useState<Record<string, number>>({});
   const [newMessageByChat, setNewMessageByChat] = useState<Record<string, boolean>>({});
+  const [downloadedFilesByMessage, setDownloadedFilesByMessage] = useState<Record<string, string>>({});
   const [status, setStatus] = useState('');
   const activeDialogIdRef = useRef<string | null>(null);
   const pendingMessageLoadsRef = useRef(new Map<string, Promise<void>>());
@@ -89,8 +97,15 @@ const App: React.FC = () => {
   const chatRange = getWindowedRange(chatCursor, effectiveChats.length, CHAT_WINDOW);
   const addRange = getWindowedRange(addCursor, addOptions.length, ADD_WINDOW);
 
+  const persistConfig = useCallback(
+    (nextWhitelisted: WhitelistedItem[], nextDownloadDirectory = downloadDirectory) => {
+      saveConfig({ whitelisted: nextWhitelisted, downloadDirectory: nextDownloadDirectory });
+    },
+    [downloadDirectory]
+  );
+
   const persistWhitelist = (next: WhitelistedItem[]) => {
-    saveConfig({ whitelisted: next });
+    persistConfig(next);
     setWhitelisted(next);
   };
 
@@ -222,6 +237,34 @@ const App: React.FC = () => {
     }
   }, []);
 
+  const registerDownloadedDocument = useCallback((dialogId: string, messageId: number, targetPath: string) => {
+    setDownloadedFilesByMessage((prev) => ({ ...prev, [getMessageStorageKey(dialogId, messageId)]: targetPath }));
+  }, []);
+
+  const ensureDocumentDownloaded = useCallback(
+    async (dialogId: string, chatName: string, message: MessageSummary): Promise<DownloadedDocument> => {
+      if (!message.fileName) {
+        throw new Error('This document does not expose a file name.');
+      }
+
+      const targetPath = prepareDownloadPath(downloadDirectory, chatName, message.id, message.fileName);
+
+      if (!fileExists(targetPath)) {
+        const downloaded = await downloadDocumentFromDialog(dialogId, message.id, targetPath);
+        registerDownloadedDocument(dialogId, message.id, downloaded.path);
+        return downloaded;
+      }
+
+      registerDownloadedDocument(dialogId, message.id, targetPath);
+      return {
+        fileName: message.fileName,
+        mimeType: message.mimeType,
+        path: targetPath,
+      };
+    },
+    [downloadDirectory, registerDownloadedDocument]
+  );
+
   useEffect(() => {
     const boot = async () => {
       try {
@@ -230,6 +273,7 @@ const App: React.FC = () => {
 
         const config = loadConfig();
         setWhitelisted(config.whitelisted);
+        setDownloadDirectory(config.downloadDirectory);
         setStep(config.whitelisted.length > 0 ? 'main' : 'setup');
         setStatus('');
       } catch (err) {
@@ -282,6 +326,10 @@ const App: React.FC = () => {
     selectedSetup,
     setSelectedSetup,
     persistWhitelist,
+    downloadDirectory,
+    setDownloadDirectory,
+    isEditingDownloadDirectory,
+    setIsEditingDownloadDirectory,
     setStep,
     logoutMode,
     setLogoutMode,
@@ -293,6 +341,7 @@ const App: React.FC = () => {
     addSelected,
     setAddSelected,
     whitelisted,
+    folders,
     showReactionPicker,
     setShowReactionPicker,
     messages,
@@ -313,7 +362,7 @@ const App: React.FC = () => {
     performLogout: async () => {
       setStatus('Logging out...');
       await logoutAndClearSession();
-      saveConfig({ whitelisted: [] });
+      persistConfig([], downloadDirectory);
       setStatus('Logged out. Restart app to sign in with another account.');
       process.exit(0);
     },
@@ -326,6 +375,25 @@ const App: React.FC = () => {
     refreshActiveSendCapability,
     editingMessageId,
     setEditingMessageId,
+    downloadedFilesByMessage,
+    downloadSelectedDocument: async (dialogId, chatName, message) => {
+      const downloaded = await ensureDocumentDownloaded(dialogId, chatName, message);
+      setStatus(`Saved ${downloaded.fileName} to ${downloaded.path}`);
+    },
+    openSelectedLink: async (message) => {
+      const linkUrl = message.linkUrl || extractFirstUrl(message.text);
+      if (!linkUrl) {
+        throw new Error('Selected message does not contain an openable link.');
+      }
+
+      await openExternalTarget(linkUrl);
+      setStatus(`Opened ${linkUrl}`);
+    },
+    openSelectedDocument: async (dialogId, chatName, message) => {
+      const downloaded = await ensureDocumentDownloaded(dialogId, chatName, message);
+      await openLocalFile(downloaded.path);
+      setStatus(`Opened ${downloaded.fileName}`);
+    },
   });
 
   if (step === 'loading') {
@@ -346,6 +414,8 @@ const App: React.FC = () => {
         visibleStart={setupRange.start}
         visibleEnd={setupRange.end}
         status={status}
+        downloadDirectory={downloadDirectory}
+        editingDownloadDirectory={isEditingDownloadDirectory}
       />
     );
   }
@@ -364,6 +434,7 @@ const App: React.FC = () => {
       sendCapability={sendCapability}
       showReactionPicker={showReactionPicker}
       status={status}
+      downloadedFilesByMessage={downloadedFilesByMessage}
       addMode={addMode}
       addOptions={addOptions}
       addCursor={addCursor}
