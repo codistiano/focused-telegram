@@ -213,6 +213,18 @@ export async function sendMessageToDialog(dialogId: string, text: string): Promi
   await tg.sendMessage(dialogId, { message: trimmed });
 }
 
+export async function editMessageInDialog(dialogId: string, messageId: number, text: string): Promise<void> {
+  const tg = ensureClient();
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  await tg.editMessage(dialogId, { message: messageId, text: trimmed });
+}
+
+export async function deleteMessageInDialog(dialogId: string, messageId: number): Promise<void> {
+  const tg = ensureClient();
+  await tg.deleteMessages(dialogId, [messageId], { revoke: true });
+}
+
 export async function sendReactionToMessage(dialogId: string, messageId: number, emoji: string): Promise<void> {
   const tg = ensureClient();
   const inputPeer = await tg.getInputEntity(dialogId);

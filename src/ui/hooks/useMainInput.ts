@@ -37,6 +37,8 @@ interface MainInputOptions {
   refreshDialogsAndFolders: () => Promise<void>;
   loadMessages: (dialogId: string, silent?: boolean, isActive?: boolean) => Promise<void>;
   sendMessageToActiveDialog: (dialogId: string, text: string) => Promise<void>;
+  editMessageInActiveDialog: (dialogId: string, messageId: number, text: string) => Promise<void>;
+  deleteMessageInActiveDialog: (dialogId: string, messageId: number) => Promise<void>;
   reactToActiveMessage: (dialogId: string, messageId: number, emoji: string) => Promise<void>;
   performLogout: () => Promise<void>;
   effectiveChats: DialogSummary[];
@@ -46,6 +48,8 @@ interface MainInputOptions {
   setNewMessageByChat: Dispatch<SetStateAction<Record<string, boolean>>>;
   setMessageCursor: Dispatch<SetStateAction<number>>;
   refreshActiveSendCapability: (dialogId: string) => Promise<void>;
+  editingMessageId: number | null;
+  setEditingMessageId: Dispatch<SetStateAction<number | null>>;
 }
 
 const QUICK_REACTIONS = ['👍', '❤️', '🔥', '✅'];
@@ -83,6 +87,8 @@ export const useMainInput = ({
   refreshDialogsAndFolders,
   loadMessages,
   sendMessageToActiveDialog,
+  editMessageInActiveDialog,
+  deleteMessageInActiveDialog,
   reactToActiveMessage,
   performLogout,
   effectiveChats,
@@ -92,6 +98,8 @@ export const useMainInput = ({
   setNewMessageByChat,
   setMessageCursor,
   refreshActiveSendCapability,
+  editingMessageId,
+  setEditingMessageId,
 }: MainInputOptions) => {
   useInput((input, key) => {
     if (step === 'setup') {
@@ -162,12 +170,18 @@ export const useMainInput = ({
 
         void (async () => {
           try {
-            await sendMessageToActiveDialog(activeDialog.id, text);
+            if (editingMessageId) {
+              await editMessageInActiveDialog(activeDialog.id, editingMessageId, text);
+              setStatus(`Message #${editingMessageId} edited.`);
+            } else {
+              await sendMessageToActiveDialog(activeDialog.id, text);
+              setStatus('Message sent.');
+            }
             setComposerText('');
+            setEditingMessageId(null);
             await loadMessages(activeDialog.id, true, true);
-            setStatus('Message sent.');
           } catch (err) {
-            setStatus(`Failed to send message: ${(err as Error).message}`);
+            setStatus(`Failed to submit message: ${(err as Error).message}`);
           }
         })();
         return;
@@ -175,6 +189,7 @@ export const useMainInput = ({
 
       if (key.escape) {
         setFocus('messages');
+        setEditingMessageId(null);
         return;
       }
 
@@ -189,7 +204,17 @@ export const useMainInput = ({
 
     if (input === 'q') process.exit(0);
     else if (input === 'a') setAddMode(true);
-    else if (input === 'l') setLogoutMode(true);
+    else if (input === 'd' && focus === 'chats' && effectiveChats[chatCursor]) {
+      const selected = effectiveChats[chatCursor];
+      const next = whitelisted.filter((item) => item.id !== selected.id);
+      if (next.length === whitelisted.length) {
+        setStatus('Selected chat comes from a folder; remove the folder from whitelist to hide it.');
+      } else {
+        persistWhitelist(next);
+        setChatCursor((prev) => Math.max(0, Math.min(prev, next.length - 1)));
+        setStatus(`Removed "${selected.name}" from whitelist.`);
+      }
+    } else if (input === 'l') setLogoutMode(true);
     else if (input === 'i') {
       if (!activeDialog || !sendCapability.canSend) setStatus(sendCapability.reason || 'This chat is read-only.');
       else setFocus('composer');
@@ -198,7 +223,32 @@ export const useMainInput = ({
       void refreshDialogsAndFolders();
       if (activeDialog) void loadMessages(activeDialog.id);
     } else if (input === 'r' && messages[messageCursor]) setShowReactionPicker(true);
-    else if (focus === 'chats') {
+    else if (input === 'e' && activeDialog) {
+      const lastOwnMessage = [...messages].reverse().find((message) => message.outgoing);
+      if (!lastOwnMessage) {
+        setStatus('No outgoing messages to edit in this chat.');
+      } else {
+        setComposerText(lastOwnMessage.text || '');
+        setEditingMessageId(lastOwnMessage.id);
+        setFocus('composer');
+        setStatus(`Editing your last message (#${lastOwnMessage.id}).`);
+      }
+    } else if (input === 'x' && activeDialog) {
+      const lastOwnMessage = [...messages].reverse().find((message) => message.outgoing);
+      if (!lastOwnMessage) {
+        setStatus('No outgoing messages to delete in this chat.');
+      } else {
+        void (async () => {
+          try {
+            await deleteMessageInActiveDialog(activeDialog.id, lastOwnMessage.id);
+            await loadMessages(activeDialog.id, true, true);
+            setStatus(`Deleted your last message (#${lastOwnMessage.id}).`);
+          } catch (err) {
+            setStatus(`Failed to delete message: ${(err as Error).message}`);
+          }
+        })();
+      }
+    } else if (focus === 'chats') {
       if (key.upArrow || input === 'k') setChatCursor((prev) => Math.max(0, prev - 1));
       else if (key.downArrow || input === 'j') setChatCursor((prev) => Math.min(effectiveChats.length - 1, prev + 1));
       else if (key.return && effectiveChats[chatCursor]) {

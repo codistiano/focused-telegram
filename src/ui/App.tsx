@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text } from 'ink';
 import { loadConfig, saveConfig, WhitelistedItem } from '../config';
 import {
@@ -6,6 +6,8 @@ import {
   FolderSummary,
   MessageSummary,
   SendCapability,
+  deleteMessageInDialog,
+  editMessageInDialog,
   getAllDialogs,
   getDialogFolders,
   getMessagesForDialog,
@@ -26,6 +28,8 @@ type FocusPane = 'chats' | 'messages' | 'composer';
 const SETUP_WINDOW = 30;
 const CHAT_WINDOW = 18;
 const ADD_WINDOW = 20;
+const ACTIVE_CHAT_REFRESH_MS = 10000;
+const DIALOG_REFRESH_MS = 15000;
 
 const App: React.FC = () => {
   const [step, setStep] = useState<Step>('loading');
@@ -44,6 +48,7 @@ const App: React.FC = () => {
   const [messageCursor, setMessageCursor] = useState(0);
   const [composerText, setComposerText] = useState('');
   const [showReactionPicker, setShowReactionPicker] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
 
   const [addMode, setAddMode] = useState(false);
   const [logoutMode, setLogoutMode] = useState(false);
@@ -54,6 +59,15 @@ const App: React.FC = () => {
   const [lastSeenByChat, setLastSeenByChat] = useState<Record<string, number>>({});
   const [newMessageByChat, setNewMessageByChat] = useState<Record<string, boolean>>({});
   const [status, setStatus] = useState('');
+  const activeDialogIdRef = useRef<string | null>(null);
+  const pendingMessageLoadsRef = useRef(new Map<string, Promise<void>>());
+  const pendingDialogsRefreshRef = useRef<Promise<void> | null>(null);
+  const pendingDialogsOnlyRefreshRef = useRef<Promise<void> | null>(null);
+  const pendingSendCapabilityRef = useRef(new Map<string, Promise<void>>());
+
+  useEffect(() => {
+    activeDialogIdRef.current = activeDialogId;
+  }, [activeDialogId]);
 
   const setupOptions = useMemo<SelectableItem[]>(() => [...folders.map(toFolderItem), ...dialogs.map(toDialogItem)], [dialogs, folders]);
 
@@ -80,15 +94,88 @@ const App: React.FC = () => {
     setWhitelisted(next);
   };
 
-  const refreshDialogsAndFolders = async () => {
-    const [allDialogs, allFolders] = await Promise.all([getAllDialogs(), getDialogFolders()]);
-    setDialogs(allDialogs);
-    setFolders(allFolders);
-  };
+  const refreshDialogsAndFolders = useCallback(async () => {
+    if (pendingDialogsRefreshRef.current) {
+      return pendingDialogsRefreshRef.current;
+    }
 
-  const refreshActiveSendCapability = async (dialogId: string) => {
-    setSendCapability(await getSendCapability(dialogId));
-  };
+    const request = (async () => {
+      const [allDialogs, allFolders] = await Promise.all([getAllDialogs(), getDialogFolders()]);
+      setDialogs(allDialogs);
+      setFolders(allFolders);
+      setNewMessageByChat((prev) => {
+        const next = { ...prev };
+
+        for (const dialog of allDialogs) {
+          if (dialog.id !== activeDialogIdRef.current) {
+            next[dialog.id] = dialog.unreadCount > 0;
+          }
+        }
+
+        return next;
+      });
+    })();
+
+    pendingDialogsRefreshRef.current = request;
+
+    try {
+      await request;
+    } finally {
+      pendingDialogsRefreshRef.current = null;
+    }
+  }, []);
+
+  const refreshDialogs = useCallback(async () => {
+    if (pendingDialogsOnlyRefreshRef.current) {
+      return pendingDialogsOnlyRefreshRef.current;
+    }
+
+    const request = (async () => {
+      const allDialogs = await getAllDialogs();
+      setDialogs(allDialogs);
+      setNewMessageByChat((prev) => {
+        const next = { ...prev };
+
+        for (const dialog of allDialogs) {
+          if (dialog.id !== activeDialogIdRef.current) {
+            next[dialog.id] = dialog.unreadCount > 0;
+          }
+        }
+
+        return next;
+      });
+    })();
+
+    pendingDialogsOnlyRefreshRef.current = request;
+
+    try {
+      await request;
+    } finally {
+      pendingDialogsOnlyRefreshRef.current = null;
+    }
+  }, []);
+
+  const refreshActiveSendCapability = useCallback(async (dialogId: string) => {
+    const existing = pendingSendCapabilityRef.current.get(dialogId);
+    if (existing) {
+      return existing;
+    }
+
+    const request = (async () => {
+      const capability = await getSendCapability(dialogId);
+      if (activeDialogIdRef.current === dialogId) {
+        setSendCapability(capability);
+      }
+    })();
+
+    pendingSendCapabilityRef.current.set(dialogId, request);
+
+    try {
+      await request;
+    } finally {
+      pendingSendCapabilityRef.current.delete(dialogId);
+    }
+  }, []);
 
   const updateFreshness = (chatId: string, latestId: number, isActive: boolean) => {
     setLastSeenByChat((prev) => {
@@ -99,23 +186,41 @@ const App: React.FC = () => {
     });
   };
 
-  const loadMessages = async (dialogId: string, silent = false, isActive = true) => {
-    try {
-      if (!silent) setStatus('Loading messages…');
-      const next = await getMessagesForDialog(dialogId);
-      const latestId = next.length ? next[next.length - 1].id : 0;
-
-      if (isActive) {
-        setMessages(next);
-        setMessageCursor(Math.max(0, next.length - 1));
-      }
-
-      updateFreshness(dialogId, latestId, isActive);
-      if (!silent) setStatus('');
-    } catch (err) {
-      setStatus(`Error loading messages: ${(err as Error).message}`);
+  const loadMessages = useCallback(async (dialogId: string, silent = false, isActive = true) => {
+    const existing = pendingMessageLoadsRef.current.get(dialogId);
+    if (existing) {
+      return existing;
     }
-  };
+
+    const request = (async () => {
+      try {
+        if (!silent && isActive) setStatus('Loading messages…');
+        const next = await getMessagesForDialog(dialogId);
+        const latestId = next.length ? next[next.length - 1].id : 0;
+        const stillActive = isActive && activeDialogIdRef.current === dialogId;
+
+        if (stillActive) {
+          setMessages(next);
+          setMessageCursor(Math.max(0, next.length - 1));
+        }
+
+        updateFreshness(dialogId, latestId, stillActive);
+        if (!silent && stillActive) setStatus('');
+      } catch (err) {
+        if (!silent && isActive) {
+          setStatus(`Error loading messages: ${(err as Error).message}`);
+        }
+      }
+    })();
+
+    pendingMessageLoadsRef.current.set(dialogId, request);
+
+    try {
+      await request;
+    } finally {
+      pendingMessageLoadsRef.current.delete(dialogId);
+    }
+  }, []);
 
   useEffect(() => {
     const boot = async () => {
@@ -148,17 +253,26 @@ const App: React.FC = () => {
   }, [step, activeDialog?.id]);
 
   useEffect(() => {
-    if (step !== 'main' || !effectiveChats.length) return;
+    if (step !== 'main') return;
 
     const timer = setInterval(() => {
-      for (const chat of effectiveChats) {
-        const isActive = chat.id === activeDialog?.id;
-        void loadMessages(chat.id, true, isActive);
-      }
-    }, 10000);
+      void refreshDialogs().catch(() => {
+        // Background refresh failures should not spam the status line.
+      });
+    }, DIALOG_REFRESH_MS);
 
     return () => clearInterval(timer);
-  }, [step, effectiveChats, activeDialog?.id]);
+  }, [step, refreshDialogs]);
+
+  useEffect(() => {
+    if (step !== 'main' || !activeDialog) return;
+
+    const timer = setInterval(() => {
+      void loadMessages(activeDialog.id, true, true);
+    }, ACTIVE_CHAT_REFRESH_MS);
+
+    return () => clearInterval(timer);
+  }, [step, activeDialog?.id, loadMessages]);
 
   useMainInput({
     step,
@@ -193,6 +307,8 @@ const App: React.FC = () => {
     refreshDialogsAndFolders,
     loadMessages,
     sendMessageToActiveDialog: sendMessageToDialog,
+    editMessageInActiveDialog: editMessageInDialog,
+    deleteMessageInActiveDialog: deleteMessageInDialog,
     reactToActiveMessage: sendReactionToMessage,
     performLogout: async () => {
       setStatus('Logging out...');
@@ -208,6 +324,8 @@ const App: React.FC = () => {
     setNewMessageByChat,
     setMessageCursor,
     refreshActiveSendCapability,
+    editingMessageId,
+    setEditingMessageId,
   });
 
   if (step === 'loading') {
@@ -242,6 +360,7 @@ const App: React.FC = () => {
       messages={messages}
       messageCursor={messageCursor}
       composerText={composerText}
+      editingMessageId={editingMessageId}
       sendCapability={sendCapability}
       showReactionPicker={showReactionPicker}
       status={status}
