@@ -60,7 +60,9 @@ const App: React.FC = () => {
   const [addMode, setAddMode] = useState(false);
   const [logoutMode, setLogoutMode] = useState(false);
   const [addCursor, setAddCursor] = useState(0);
-  const [addSelected, setAddSelected] = useState<number[]>([]);
+  const [addSelectedIds, setAddSelectedIds] = useState<string[]>([]);
+  const [addSearchText, setAddSearchText] = useState('');
+  const [isEditingAddSearch, setIsEditingAddSearch] = useState(false);
 
   const [sendCapability, setSendCapability] = useState<SendCapability>({ canSend: true });
   const [lastSeenByChat, setLastSeenByChat] = useState<Record<string, number>>({});
@@ -92,10 +94,19 @@ const App: React.FC = () => {
     const existing = new Set(whitelisted.map((w) => w.id));
     return setupOptions.filter((item) => !existing.has(item.id));
   }, [setupOptions, whitelisted]);
+  const filteredAddOptions = useMemo(() => {
+    const query = addSearchText.trim().toLowerCase();
+    if (!query) return addOptions;
+
+    return addOptions.filter((item) => {
+      const haystack = `${item.name} ${item.type} ${item.username || ''}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [addOptions, addSearchText]);
 
   const setupRange = getWindowedRange(setupCursor, setupOptions.length, SETUP_WINDOW);
   const chatRange = getWindowedRange(chatCursor, effectiveChats.length, CHAT_WINDOW);
-  const addRange = getWindowedRange(addCursor, addOptions.length, ADD_WINDOW);
+  const addRange = getWindowedRange(addCursor, filteredAddOptions.length, ADD_WINDOW);
 
   const persistConfig = useCallback(
     (nextWhitelisted: WhitelistedItem[], nextDownloadDirectory = downloadDirectory) => {
@@ -337,9 +348,13 @@ const App: React.FC = () => {
     setAddMode,
     addCursor,
     setAddCursor,
-    addOptions,
-    addSelected,
-    setAddSelected,
+    addOptions: filteredAddOptions,
+    addSelectedIds,
+    setAddSelectedIds,
+    addSearchText,
+    setAddSearchText,
+    isEditingAddSearch,
+    setIsEditingAddSearch,
     whitelisted,
     folders,
     showReactionPicker,
@@ -436,9 +451,11 @@ const App: React.FC = () => {
       status={status}
       downloadedFilesByMessage={downloadedFilesByMessage}
       addMode={addMode}
-      addOptions={addOptions}
+      addOptions={filteredAddOptions}
       addCursor={addCursor}
-      addSelected={addSelected}
+      addSelectedIds={addSelectedIds}
+      addSearchText={addSearchText}
+      isEditingAddSearch={isEditingAddSearch}
       addVisibleStart={addRange.start}
       addVisibleEnd={addRange.end}
       chatVisibleStart={chatRange.start}

@@ -27,8 +27,12 @@ interface MainInputOptions {
   addCursor: number;
   setAddCursor: Dispatch<SetStateAction<number>>;
   addOptions: SelectableItem[];
-  addSelected: number[];
-  setAddSelected: Dispatch<SetStateAction<number[]>>;
+  addSelectedIds: string[];
+  setAddSelectedIds: Dispatch<SetStateAction<string[]>>;
+  addSearchText: string;
+  setAddSearchText: Dispatch<SetStateAction<string>>;
+  isEditingAddSearch: boolean;
+  setIsEditingAddSearch: Dispatch<SetStateAction<boolean>>;
   whitelisted: WhitelistedItem[];
   folders: FolderSummary[];
   showReactionPicker: boolean;
@@ -87,8 +91,12 @@ export const useMainInput = ({
   addCursor,
   setAddCursor,
   addOptions,
-  addSelected,
-  setAddSelected,
+  addSelectedIds,
+  setAddSelectedIds,
+  addSearchText,
+  setAddSearchText,
+  isEditingAddSearch,
+  setIsEditingAddSearch,
   whitelisted,
   folders,
   showReactionPicker,
@@ -175,22 +183,48 @@ export const useMainInput = ({
     }
 
     if (addMode) {
+      if (isEditingAddSearch) {
+        if (key.return || key.escape) {
+          setIsEditingAddSearch(false);
+        } else if (key.backspace || key.delete) {
+          setAddSearchText((prev) => prev.slice(0, -1));
+          setAddCursor(0);
+        } else if (!key.ctrl && !key.meta && input) {
+          setAddSearchText((prev) => prev + input);
+          setAddCursor(0);
+        }
+        return;
+      }
+
       if (key.upArrow || input === 'k') setAddCursor((prev) => Math.max(0, prev - 1));
       else if (key.downArrow || input === 'j') setAddCursor((prev) => Math.min(addOptions.length - 1, prev + 1));
       else if (input === ' ') {
-        setAddSelected((prev) => (prev.includes(addCursor) ? prev.filter((i) => i !== addCursor) : [...prev, addCursor]));
+        const selectedOption = addOptions[addCursor];
+        if (selectedOption) {
+          setAddSelectedIds((prev) =>
+            prev.includes(selectedOption.id) ? prev.filter((id) => id !== selectedOption.id) : [...prev, selectedOption.id]
+          );
+        }
       } else if (key.return) {
-        const additions = addSelected.map((idx) => addOptions[idx]);
+        const additions = [...setupOptions]
+          .filter((item) => addSelectedIds.includes(item.id))
+          .filter((item) => !whitelisted.some((entry) => entry.id === item.id));
         if (additions.length) {
           persistWhitelist([...whitelisted, ...additions]);
           setStatus(`Added ${additions.length} whitelist item(s).`);
         }
         setAddMode(false);
         setAddCursor(0);
-        setAddSelected([]);
+        setAddSelectedIds([]);
+        setAddSearchText('');
+        setIsEditingAddSearch(false);
       } else if (key.escape || input === 'q') {
         setAddMode(false);
-        setAddSelected([]);
+        setAddSelectedIds([]);
+        setAddSearchText('');
+        setIsEditingAddSearch(false);
+      } else if (input === '/') {
+        setIsEditingAddSearch(true);
       }
       return;
     }

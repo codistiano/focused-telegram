@@ -26,7 +26,9 @@ interface MainScreenProps {
   addMode: boolean;
   addOptions: SelectableItem[];
   addCursor: number;
-  addSelected: number[];
+  addSelectedIds: string[];
+  addSearchText: string;
+  isEditingAddSearch: boolean;
   addVisibleStart: number;
   addVisibleEnd: number;
   chatVisibleStart: number;
@@ -183,11 +185,14 @@ const MainScreen: React.FC<MainScreenProps> = (props) => {
             width={Math.max(24, Math.min(frameWidth, 72))}
           >
             <Text bold color="magenta">Add to whitelist</Text>
-            <Text dimColor>Space select • Enter add • Esc cancel</Text>
+            <Text dimColor>/ search • Space select • Enter add • Esc cancel • j/k move</Text>
+            <Text color={props.isEditingAddSearch ? 'cyan' : undefined}>
+              Search: {props.addSearchText || '(all chats and folders)'} {props.isEditingAddSearch ? '|' : ''}
+            </Text>
             {visibleAdd.map((item, idx) => {
               const absoluteIndex = props.addVisibleStart + idx;
               const isCursor = props.addCursor === absoluteIndex;
-              const isSelected = props.addSelected.includes(absoluteIndex);
+              const isSelected = props.addSelectedIds.includes(item.id);
               return (
                 <Text key={`add-${item.id}`} inverse={isCursor} color={isSelected ? 'green' : undefined}>
                   {isSelected ? '●' : '○'} {truncate(item.name, Math.max(10, frameWidth - 24))} <Text dimColor>({item.type})</Text>
