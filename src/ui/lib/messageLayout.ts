@@ -38,7 +38,7 @@ export const wrapMessageBody = (text: string, width: number): string[] =>
   text.split(/\r?\n/).flatMap((line) => wrapLine(line, width));
 
 export const getMessagePaneWidth = (terminalColumns: number, chatPaneWidth: number): number =>
-  Math.max(28, terminalColumns - chatPaneWidth - 9);
+  Math.max(18, terminalColumns - chatPaneWidth - 9);
 
 export const getMessageLineBudget = (terminalRows: number): number => Math.max(8, terminalRows - 14);
 
