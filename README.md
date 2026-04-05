@@ -55,7 +55,7 @@ API_ID=your_telegram_api_id
 API_HASH=your_telegram_api_hash
 ```
 
-You get these values from Telegram's developer portal for your account/app.
+You get these values from Telegram's developer portal for your account/app. Get it from [here](https://my.telegram.org/auth?to=apps)
 
 ### 3. Start the app
 
