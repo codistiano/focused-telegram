@@ -120,11 +120,19 @@ const MainScreen: React.FC<MainScreenProps> = (props) => {
           </Box>
         </Box>
 
-        <Box marginTop={1} borderStyle="single" borderColor={props.focus === 'composer' ? 'cyan' : props.sendCapability.canSend ? 'gray' : 'red'} paddingX={1}>
-          <Text>
-            {props.focus === 'composer' ? (props.editingMessageId ? 'Edit > ' : 'Compose > ') : 'Press i to compose > '}
-            {props.composerText ? truncate(props.composerText, Math.max(10, frameWidth - 20)) : <Text dimColor>(type message)</Text>}
-          </Text>
+        <Box
+          marginTop={1}
+          borderStyle="single"
+          borderColor={props.focus === 'composer' ? 'cyan' : props.sendCapability.canSend ? 'gray' : 'red'}
+          paddingX={1}
+          flexDirection="column"
+        >
+          <Text>{props.focus === 'composer' ? (props.editingMessageId ? 'Edit >' : 'Compose >') : 'Press i to compose >'}</Text>
+          {props.composerText ? (
+            <Text wrap="wrap">{props.composerText}</Text>
+          ) : (
+            <Text dimColor>(type message)</Text>
+          )}
         </Box>
 
         {!props.sendCapability.canSend ? <Text color="red">Read-only: {props.sendCapability.reason}</Text> : null}

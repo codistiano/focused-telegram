@@ -53,6 +53,7 @@ interface MainInputOptions {
 }
 
 const QUICK_REACTIONS = ['👍', '❤️', '🔥', '✅'];
+const applyComposerEscapes = (value: string): string => value.replace(/\\n/g, '\n');
 
 export const useMainInput = ({
   step,
@@ -198,7 +199,9 @@ export const useMainInput = ({
         return;
       }
 
-      if (!key.ctrl && !key.meta && input) setComposerText((prev) => prev + input);
+      if (!key.ctrl && !key.meta && input) {
+        setComposerText((prev) => applyComposerEscapes(prev + input));
+      }
       return;
     }
 
